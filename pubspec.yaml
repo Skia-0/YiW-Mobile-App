@@ -1,0 +1,61 @@
+name: yiw_field_report
+description: YiW Daily Field Report Mobile App for SEG Ghana
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.6
+
+  # Firebase
+  firebase_core: ^3.6.0
+  firebase_auth: ^5.3.0
+  cloud_firestore: ^5.4.0
+  firebase_storage: ^12.3.0
+
+  # State Management
+  provider: ^6.1.2
+
+  # UI Components
+  shimmer: ^3.0.0
+
+  # Media & Camera
+  image_picker: ^1.1.2
+
+  # Documents & PDF
+  pdf: ^3.10.8
+  printing: ^5.13.0
+  path_provider: ^2.1.4
+  file_picker: ^8.1.0
+
+  # Networking & APIs
+  http: ^1.2.2
+
+  # Storage & Offline
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
+  connectivity_plus: ^6.1.0
+
+  # Utilities
+  uuid: ^4.5.1
+  share_plus: ^10.1.2
+  url_launcher: ^6.3.1
+  permission_handler: ^11.3.1
+  googleapis: ^13.0.0
+  googleapis_auth: ^1.6.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/images/
+    - lib/config/secrets.json
