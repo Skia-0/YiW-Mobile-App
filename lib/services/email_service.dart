@@ -165,7 +165,7 @@ class EmailService {
                 <p style="margin: 0; font-size: 13px; color: #555555;">This report has been automatically added to the central Google Sheet for consolidated data tracking and analysis.</p>
               </td>
               <td style="width: 30%; text-align: right; vertical-align: middle;">
-                <a href="https://docs.google.com/spreadsheets/d/1vC3HSNrd78N4IGftTSXEdr39_zjZcliaenxwBAnw4pM" style="display: inline-block; background-color: #1565c0; color: #ffffff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 14px;">Open Sheet →</a>
+                <a href="https://docs.google.com/spreadsheets/d/1vC3HSNrd78N4IGftTSXEdr39_zjZcliaenxwBAnw4pM/edit#gid=0" style="display: inline-block; background-color: #1565c0; color: #ffffff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 14px;">Open Sheet →</a>
               </td>
             </tr>
           </table>
