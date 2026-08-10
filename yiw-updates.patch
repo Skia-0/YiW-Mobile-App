@@ -96,8 +96,86 @@ index e4c568f..5ee5ab7 100644
        ],
        child: const YiWFieldReportApp(),
      ),
+diff --git a/lib/screens/home_screen.dart b/lib/screens/home_screen.dart
+index 7a64f80..747b2d9 100644
+--- a/lib/screens/home_screen.dart
++++ b/lib/screens/home_screen.dart
+@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
+ import 'package:yiw_field_report/services/auth_service.dart';
+ import 'package:yiw_field_report/services/report_service.dart';
+ import 'package:yiw_field_report/services/offline_service.dart';
++import 'package:yiw_field_report/services/theme_service.dart';
+ import 'package:yiw_field_report/theme/colors.dart';
+ import 'package:yiw_field_report/widgets/dashboard_card.dart';
+ 
+@@ -16,7 +17,6 @@ class HomeScreen extends StatefulWidget {
+ class _HomeScreenState extends State<HomeScreen> {
+   int _currentIndex = 0;
+   bool _isLoading = true;
+-  bool _darkMode = false;
+   bool _notificationsEnabled = true;
+   bool _offlineMode = true;
+ 
+@@ -40,11 +40,9 @@ class _HomeScreenState extends State<HomeScreen> {
+ 
+   Future<void> _loadSettings() async {
+     final offlineService = Provider.of<OfflineService>(context, listen: false);
+-    final darkMode = await offlineService.getSetting('darkMode');
+     final notifications = await offlineService.getSetting('notifications');
+     final offline = await offlineService.getSetting('offlineMode');
+     setState(() {
+-      _darkMode = darkMode ?? false;
+       _notificationsEnabled = notifications ?? true;
+       _offlineMode = offline ?? true;
+     });
+@@ -77,8 +75,16 @@ class _HomeScreenState extends State<HomeScreen> {
+       bottomNavigationBar: BottomNavigationBar(
+         currentIndex: _currentIndex,
+         onTap: (index) { setState(() { _currentIndex = index; }); },
+-        selectedItemColor: AppColors.primary,
+-        unselectedItemColor: AppColors.textSecondary,
++        selectedItemColor: Theme.of(context).brightness == Brightness.dark
++            ? AppColors.primaryLight
++            : AppColors.primary,
++        unselectedItemColor: Theme.of(context).brightness == Brightness.dark
++            ? AppColorsDark.textSecondary
++            : AppColors.textSecondary,
++        backgroundColor: Theme.of(context).brightness == Brightness.dark
++            ? AppColorsDark.surface
++            : Colors.white,
++        type: BottomNavigationBarType.fixed,
+         items: const [
+           BottomNavigationBarItem(icon: Icon(Icons.dashboard_outlined), activeIcon: Icon(Icons.dashboard), label: 'Dashboard'),
+           BottomNavigationBarItem(icon: Icon(Icons.description_outlined), activeIcon: Icon(Icons.description), label: 'Reports'),
+@@ -347,16 +353,16 @@ class _HomeScreenState extends State<HomeScreen> {
+               children: [
+                 const Text('App Settings', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+                 const SizedBox(height: 16),
+-                SwitchListTile(
+-                  title: const Text('Dark Mode'),
+-                  subtitle: const Text('Switch between light and dark theme'),
+-                  value: _darkMode,
+-                  onChanged: (value) {
+-                    setState(() { _darkMode = value; });
+-                    _saveSetting('darkMode', value);
+-                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Dark mode ${value ? "enabled" : "disabled"}'), backgroundColor: AppColors.info));
+-                  },
+-                  secondary: const Icon(Icons.dark_mode_outlined),
++                Consumer<ThemeService>(
++                  builder: (context, themeService, _) => SwitchListTile(
++                    title: const Text('Dark Mode'),
++                    subtitle: const Text('Switch between light and dark theme'),
++                    value: themeService.isDarkMode,
++                    onChanged: (value) => themeService.setDarkMode(value),
++                    secondary: Icon(themeService.isDarkMode
++                        ? Icons.dark_mode
++                        : Icons.dark_mode_outlined),
++                  ),
+                 ),
+                 const Divider(),
+                 SwitchListTile(
 diff --git a/lib/screens/report_form_screen.dart b/lib/screens/report_form_screen.dart
-index c717005..1a102cc 100644
+index c717005..a6fb68b 100644
 --- a/lib/screens/report_form_screen.dart
 +++ b/lib/screens/report_form_screen.dart
 @@ -10,6 +10,8 @@ import 'package:yiw_field_report/services/report_service.dart';
@@ -145,6 +223,7 @@ index c717005..1a102cc 100644
    @override
    Widget build(BuildContext context) {
 -    return Scaffold(
+-      backgroundColor: Colors.grey[50],
 +    return PopScope(
 +      canPop: false,
 +      onPopInvokedWithResult: (didPop, result) async {
@@ -153,7 +232,7 @@ index c717005..1a102cc 100644
 +        if (shouldPop && mounted) Navigator.of(context).pop();
 +      },
 +      child: Scaffold(
-       backgroundColor: Colors.grey[50],
++      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
        appBar: AppBar(
 -        title: const Text('New Field Report'),
 +        title: Column(
@@ -177,6 +256,15 @@ index c717005..1a102cc 100644
              icon: const Icon(Icons.save_outlined, color: Colors.white),
              label: const Text('Save Draft', style: TextStyle(color: Colors.white)),
            ),
+@@ -199,7 +233,7 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
+           Container(
+             padding: const EdgeInsets.all(16),
+             decoration: BoxDecoration(
+-              color: Colors.white,
++              color: Theme.of(context).cardColor,
+               boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, -5))],
+             ),
+             child: Row(
 @@ -231,6 +265,7 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
            ),
          ],
@@ -185,6 +273,29 @@ index c717005..1a102cc 100644
      );
    }
  
+@@ -598,11 +633,11 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
+                   duration: const Duration(milliseconds: 200),
+                   width: 56, height: 56,
+                   decoration: BoxDecoration(
+-                    color: _rating == i + 1 ? AppColors.primary : AppColors.inputFill,
++                    color: _rating == i + 1 ? AppColors.primary : Theme.of(context).inputDecorationTheme.fillColor,
+                     borderRadius: BorderRadius.circular(12),
+                     boxShadow: _rating == i + 1 ? [BoxShadow(color: AppColors.primary.withOpacity(0.3), blurRadius: 8)] : [],
+                   ),
+-                  child: Center(child: Text('${i + 1}', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: _rating == i + 1 ? Colors.white : AppColors.textPrimary))),
++                  child: Center(child: Text('${i + 1}', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: _rating == i + 1 ? Colors.white : Theme.of(context).textTheme.bodyLarge?.color))),
+                 ),
+               )),
+             ),
+@@ -763,7 +798,7 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
+         border: Border.all(color: value ? AppColors.success.withOpacity(0.3) : Colors.grey.withOpacity(0.2)),
+       ),
+       child: CheckboxListTile(
+-        title: Text(title, style: TextStyle(fontSize: 13, color: value ? AppColors.success : AppColors.textPrimary)),
++        title: Text(title, style: TextStyle(fontSize: 13, color: value ? AppColors.success : Theme.of(context).textTheme.bodyLarge?.color)),
+         value: value,
+         onChanged: (v) => onChanged(v!),
+         activeColor: AppColors.success,
 @@ -865,6 +900,7 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
        _animationController.reset();
        setState(() { _currentStep++; });
@@ -640,3 +751,66 @@ index 0000000..ec4895c
 +
 +  Future<void> toggle() => setDarkMode(!_isDarkMode);
 +}
+diff --git a/lib/theme/app_theme.dart b/lib/theme/app_theme.dart
+index 0a6d9a5..a9ec664 100644
+--- a/lib/theme/app_theme.dart
++++ b/lib/theme/app_theme.dart
+@@ -163,6 +163,45 @@ class AppTheme {
+         color: AppColorsDark.divider,
+         thickness: 1,
+       ),
++      // Explicit surface/text theming so screens flip white -> black properly.
++      canvasColor: AppColorsDark.surface,
++      cardColor: AppColorsDark.card,
++      dialogTheme: DialogThemeData(
++        backgroundColor: AppColorsDark.card,
++        titleTextStyle: const TextStyle(
++          color: AppColorsDark.textPrimary,
++          fontSize: 20,
++          fontWeight: FontWeight.w600,
++        ),
++        contentTextStyle: const TextStyle(
++          color: AppColorsDark.textPrimary,
++          fontSize: 14,
++        ),
++      ),
++      bottomNavigationBarTheme: const BottomNavigationBarThemeData(
++        backgroundColor: AppColorsDark.surface,
++        selectedItemColor: AppColors.primaryLight,
++        unselectedItemColor: AppColorsDark.textSecondary,
++        type: BottomNavigationBarType.fixed,
++      ),
++      bottomSheetTheme: const BottomSheetThemeData(
++        backgroundColor: AppColorsDark.card,
++      ),
++      listTileTheme: const ListTileThemeData(
++        textColor: AppColorsDark.textPrimary,
++        iconColor: AppColorsDark.textSecondary,
++      ),
++      expansionTileTheme: const ExpansionTileThemeData(
++        textColor: AppColorsDark.textPrimary,
++        collapsedTextColor: AppColorsDark.textPrimary,
++        iconColor: AppColorsDark.textSecondary,
++        collapsedIconColor: AppColorsDark.textSecondary,
++      ),
++      iconTheme: const IconThemeData(color: AppColorsDark.textSecondary),
++      textTheme: Typography.whiteMountainView.apply(
++        bodyColor: AppColorsDark.textPrimary,
++        displayColor: AppColorsDark.textPrimary,
++      ),
+     );
+   }
+ }
+diff --git a/lib/widgets/horizontal_form_field.dart b/lib/widgets/horizontal_form_field.dart
+index bacdaf9..899651e 100644
+--- a/lib/widgets/horizontal_form_field.dart
++++ b/lib/widgets/horizontal_form_field.dart
+@@ -28,7 +28,7 @@ class HorizontalFormField extends StatelessWidget {
+                 style: TextStyle(
+                   fontSize: 13,
+                   fontWeight: FontWeight.w500,
+-                  color: required ? Colors.black87 : Colors.grey[700],
++                  color: Theme.of(context).textTheme.bodyLarge?.color?.withOpacity(required ? 0.87 : 0.6),
+                 ),
+               ),
+             ),
