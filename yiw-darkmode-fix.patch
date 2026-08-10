@@ -1,0 +1,816 @@
+diff --git a/lib/app.dart b/lib/app.dart
+index 3a3de9c..9b7850a 100644
+--- a/lib/app.dart
++++ b/lib/app.dart
+@@ -8,18 +8,21 @@ import 'package:yiw_field_report/screens/saved_reports_screen.dart';
+ import 'package:yiw_field_report/screens/settings_screen.dart';
+ import 'package:yiw_field_report/screens/register_screen.dart';
+ import 'package:yiw_field_report/services/auth_service.dart';
++import 'package:yiw_field_report/services/theme_service.dart';
+ 
+ class YiWFieldReportApp extends StatelessWidget {
+   const YiWFieldReportApp({super.key});
+ 
+   @override
+   Widget build(BuildContext context) {
++    final themeService = context.watch<ThemeService>();
++
+     return MaterialApp(
+       title: 'YiW Field Report',
+       debugShowCheckedModeBanner: false,
+       theme: AppTheme.lightTheme,
+       darkTheme: AppTheme.darkTheme,
+-      themeMode: ThemeMode.light,
++      themeMode: themeService.themeMode,
+       home: const SplashScreen(),
+       routes: {
+         '/login': (context) => const LoginScreen(),
+diff --git a/lib/config/secrets.template.json b/lib/config/secrets.template.json
+new file mode 100644
+index 0000000..430d545
+--- /dev/null
++++ b/lib/config/secrets.template.json
+@@ -0,0 +1,9 @@
++{
++  "sendgrid_api_key": "PASTE_SENDGRID_API_KEY_HERE",
++  "sender_email": "PASTE_SENDER_EMAIL_HERE",
++  "spreadsheet_id": "1vC3HSNrd78N4IGftTSXEdr39_zjZcliaenxwBAnw4pM",
++  "service_account_email": "yiw-sheets@yiw-app.iam.gserviceaccount.com",
++  "private_key": "-----BEGIN PRIVATE KEY-----\nPASTE_KEY_BODY\n-----END PRIVATE KEY-----\n",
++  "ceo_email": "execdir@seghana.net",
++  "yiw_email": "yiw@seghana.net"
++}
+diff --git a/lib/main.dart b/lib/main.dart
+index e4c568f..5ee5ab7 100644
+--- a/lib/main.dart
++++ b/lib/main.dart
+@@ -6,30 +6,43 @@ import 'package:yiw_field_report/app.dart';
+ import 'package:yiw_field_report/services/auth_service.dart';
+ import 'package:yiw_field_report/services/report_service.dart';
+ import 'package:yiw_field_report/services/offline_service.dart';
++import 'package:yiw_field_report/services/theme_service.dart';
++import 'package:yiw_field_report/services/draft_service.dart';
+ 
+ void main() async {
+   WidgetsFlutterBinding.ensureInitialized();
+-  
++
+   // Initialize Firebase (uses platform-specific config files)
+   await Firebase.initializeApp();
+-  
+-  // Initialize Hive for offline storage
++
++  // Initialize Hive for offline storage.
++  // NOTE: these must be opened as Box<String> to match OfflineService /
++  // DraftService. Previously they were opened untyped, which made Hive throw
++  // on every later access and silently broke settings persistence.
+   await Hive.initFlutter();
+-  await Hive.openBox('reports');
+-  await Hive.openBox('drafts');
+-  await Hive.openBox('settings');
+-  
++  await Hive.openBox<String>('reports');
++  await Hive.openBox<String>('drafts');
++  await Hive.openBox<String>('settings');
++
+   // Initialize services
+   final authService = AuthService();
+   final reportService = ReportService();
+   final offlineService = OfflineService();
+-  
++  await offlineService.initialize();
++
++  final themeService = ThemeService(offlineService);
++  await themeService.load();
++
++  final draftService = DraftService();
++
+   runApp(
+     MultiProvider(
+       providers: [
+         ChangeNotifierProvider(create: (_) => authService),
+         ChangeNotifierProvider(create: (_) => reportService),
+         ChangeNotifierProvider(create: (_) => offlineService),
++        ChangeNotifierProvider(create: (_) => themeService),
++        Provider<DraftService>(create: (_) => draftService),
+       ],
+       child: const YiWFieldReportApp(),
+     ),
+diff --git a/lib/screens/home_screen.dart b/lib/screens/home_screen.dart
+index 7a64f80..747b2d9 100644
+--- a/lib/screens/home_screen.dart
++++ b/lib/screens/home_screen.dart
+@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
+ import 'package:yiw_field_report/services/auth_service.dart';
+ import 'package:yiw_field_report/services/report_service.dart';
+ import 'package:yiw_field_report/services/offline_service.dart';
++import 'package:yiw_field_report/services/theme_service.dart';
+ import 'package:yiw_field_report/theme/colors.dart';
+ import 'package:yiw_field_report/widgets/dashboard_card.dart';
+ 
+@@ -16,7 +17,6 @@ class HomeScreen extends StatefulWidget {
+ class _HomeScreenState extends State<HomeScreen> {
+   int _currentIndex = 0;
+   bool _isLoading = true;
+-  bool _darkMode = false;
+   bool _notificationsEnabled = true;
+   bool _offlineMode = true;
+ 
+@@ -40,11 +40,9 @@ class _HomeScreenState extends State<HomeScreen> {
+ 
+   Future<void> _loadSettings() async {
+     final offlineService = Provider.of<OfflineService>(context, listen: false);
+-    final darkMode = await offlineService.getSetting('darkMode');
+     final notifications = await offlineService.getSetting('notifications');
+     final offline = await offlineService.getSetting('offlineMode');
+     setState(() {
+-      _darkMode = darkMode ?? false;
+       _notificationsEnabled = notifications ?? true;
+       _offlineMode = offline ?? true;
+     });
+@@ -77,8 +75,16 @@ class _HomeScreenState extends State<HomeScreen> {
+       bottomNavigationBar: BottomNavigationBar(
+         currentIndex: _currentIndex,
+         onTap: (index) { setState(() { _currentIndex = index; }); },
+-        selectedItemColor: AppColors.primary,
+-        unselectedItemColor: AppColors.textSecondary,
++        selectedItemColor: Theme.of(context).brightness == Brightness.dark
++            ? AppColors.primaryLight
++            : AppColors.primary,
++        unselectedItemColor: Theme.of(context).brightness == Brightness.dark
++            ? AppColorsDark.textSecondary
++            : AppColors.textSecondary,
++        backgroundColor: Theme.of(context).brightness == Brightness.dark
++            ? AppColorsDark.surface
++            : Colors.white,
++        type: BottomNavigationBarType.fixed,
+         items: const [
+           BottomNavigationBarItem(icon: Icon(Icons.dashboard_outlined), activeIcon: Icon(Icons.dashboard), label: 'Dashboard'),
+           BottomNavigationBarItem(icon: Icon(Icons.description_outlined), activeIcon: Icon(Icons.description), label: 'Reports'),
+@@ -347,16 +353,16 @@ class _HomeScreenState extends State<HomeScreen> {
+               children: [
+                 const Text('App Settings', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+                 const SizedBox(height: 16),
+-                SwitchListTile(
+-                  title: const Text('Dark Mode'),
+-                  subtitle: const Text('Switch between light and dark theme'),
+-                  value: _darkMode,
+-                  onChanged: (value) {
+-                    setState(() { _darkMode = value; });
+-                    _saveSetting('darkMode', value);
+-                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Dark mode ${value ? "enabled" : "disabled"}'), backgroundColor: AppColors.info));
+-                  },
+-                  secondary: const Icon(Icons.dark_mode_outlined),
++                Consumer<ThemeService>(
++                  builder: (context, themeService, _) => SwitchListTile(
++                    title: const Text('Dark Mode'),
++                    subtitle: const Text('Switch between light and dark theme'),
++                    value: themeService.isDarkMode,
++                    onChanged: (value) => themeService.setDarkMode(value),
++                    secondary: Icon(themeService.isDarkMode
++                        ? Icons.dark_mode
++                        : Icons.dark_mode_outlined),
++                  ),
+                 ),
+                 const Divider(),
+                 SwitchListTile(
+diff --git a/lib/screens/report_form_screen.dart b/lib/screens/report_form_screen.dart
+index c717005..a6fb68b 100644
+--- a/lib/screens/report_form_screen.dart
++++ b/lib/screens/report_form_screen.dart
+@@ -10,6 +10,8 @@ import 'package:yiw_field_report/services/report_service.dart';
+ import 'package:yiw_field_report/services/auth_service.dart';
+ import 'package:yiw_field_report/theme/colors.dart';
+ import 'package:yiw_field_report/config/app_config.dart';
++import 'package:yiw_field_report/services/draft_service.dart';
++import 'dart:async';
+ 
+ class ReportFormScreen extends StatefulWidget {
+   const ReportFormScreen({super.key});
+@@ -24,6 +26,11 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
+   bool _isSubmitting = false;
+   late AnimationController _animationController;
+   late Animation<double> _fadeAnimation;
++
++  // Draft auto-save
++  Timer? _autoSaveTimer;
++  DateTime? _lastSavedAt;
++  bool _draftRestored = false;
+   
+   // Form data
+   String _selectedZone = '';
+@@ -96,10 +103,18 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
+     _animationController = AnimationController(vsync: this, duration: const Duration(milliseconds: 300));
+     _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(CurvedAnimation(parent: _animationController, curve: Curves.easeInOut));
+     _animationController.forward();
++
++    // Offer to restore a previous unfinished form, then start auto-saving.
++    WidgetsBinding.instance.addPostFrameCallback((_) => _maybeRestoreDraft());
++    _autoSaveTimer = Timer.periodic(
++      const Duration(seconds: 30),
++      (_) => _saveDraft(silent: true),
++    );
+   }
+ 
+   @override
+   void dispose() {
++    _autoSaveTimer?.cancel();
+     _animationController.dispose();
+     _fullNameController.dispose();
+     _phoneController.dispose();
+@@ -129,14 +144,33 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
+ 
+   @override
+   Widget build(BuildContext context) {
+-    return Scaffold(
+-      backgroundColor: Colors.grey[50],
++    return PopScope(
++      canPop: false,
++      onPopInvokedWithResult: (didPop, result) async {
++        if (didPop) return;
++        final shouldPop = await _onWillPop();
++        if (shouldPop && mounted) Navigator.of(context).pop();
++      },
++      child: Scaffold(
++      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+       appBar: AppBar(
+-        title: const Text('New Field Report'),
++        title: Column(
++          crossAxisAlignment: CrossAxisAlignment.center,
++          mainAxisSize: MainAxisSize.min,
++          children: [
++            const Text('New Field Report'),
++            if (_lastSavedAt != null)
++              Text(
++                'Draft saved ${_friendlyTime(_lastSavedAt!)}',
++                style: const TextStyle(
++                    fontSize: 11, color: Colors.white70, fontWeight: FontWeight.w400),
++              ),
++          ],
++        ),
+         elevation: 0,
+         actions: [
+           TextButton.icon(
+-            onPressed: _saveDraft,
++            onPressed: () => _saveDraft(),
+             icon: const Icon(Icons.save_outlined, color: Colors.white),
+             label: const Text('Save Draft', style: TextStyle(color: Colors.white)),
+           ),
+@@ -199,7 +233,7 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
+           Container(
+             padding: const EdgeInsets.all(16),
+             decoration: BoxDecoration(
+-              color: Colors.white,
++              color: Theme.of(context).cardColor,
+               boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, -5))],
+             ),
+             child: Row(
+@@ -231,6 +265,7 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
+           ),
+         ],
+       ),
++    ),
+     );
+   }
+ 
+@@ -598,11 +633,11 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
+                   duration: const Duration(milliseconds: 200),
+                   width: 56, height: 56,
+                   decoration: BoxDecoration(
+-                    color: _rating == i + 1 ? AppColors.primary : AppColors.inputFill,
++                    color: _rating == i + 1 ? AppColors.primary : Theme.of(context).inputDecorationTheme.fillColor,
+                     borderRadius: BorderRadius.circular(12),
+                     boxShadow: _rating == i + 1 ? [BoxShadow(color: AppColors.primary.withOpacity(0.3), blurRadius: 8)] : [],
+                   ),
+-                  child: Center(child: Text('${i + 1}', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: _rating == i + 1 ? Colors.white : AppColors.textPrimary))),
++                  child: Center(child: Text('${i + 1}', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: _rating == i + 1 ? Colors.white : Theme.of(context).textTheme.bodyLarge?.color))),
+                 ),
+               )),
+             ),
+@@ -763,7 +798,7 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
+         border: Border.all(color: value ? AppColors.success.withOpacity(0.3) : Colors.grey.withOpacity(0.2)),
+       ),
+       child: CheckboxListTile(
+-        title: Text(title, style: TextStyle(fontSize: 13, color: value ? AppColors.success : AppColors.textPrimary)),
++        title: Text(title, style: TextStyle(fontSize: 13, color: value ? AppColors.success : Theme.of(context).textTheme.bodyLarge?.color)),
+         value: value,
+         onChanged: (v) => onChanged(v!),
+         activeColor: AppColors.success,
+@@ -865,6 +900,7 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
+       _animationController.reset();
+       setState(() { _currentStep++; });
+       _animationController.forward();
++      _saveDraft(silent: true); // checkpoint progress at each step
+     } else {
+       _submitReport();
+     }
+@@ -878,8 +914,259 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
+     }
+   }
+ 
+-  void _saveDraft() {
+-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Draft saved'), backgroundColor: AppColors.success));
++  /// Snapshot of every field on the form, used for draft persistence.
++  Map<String, dynamic> _collectFormData() => {
++        'currentStep': _currentStep,
++        'selectedZone': _selectedZone,
++        'selectedHub': _selectedHub,
++        'selectedCommunity': _selectedCommunity,
++        'visitDate': _visitDate.toIso8601String(),
++        'selectedVisitTypes': _selectedVisitTypes,
++        'fullName': _fullNameController.text,
++        'phone': _phoneController.text,
++        'email': _emailController.text,
++        'centreName': _centreNameController.text,
++        'centreAddress': _centreAddressController.text,
++        'contactPerson': _contactPersonController.text,
++        'contactPhone': _contactPhoneController.text,
++        'community': _communityController.text,
++        'otherHub': _otherHubController.text,
++        'youngMen': _youngMen,
++        'youngWomen': _youngWomen,
++        'pwd': _pwd,
++        'staff': _staff,
++        'trainers': _trainers,
++        'formalJobs': _formalJobs,
++        'internships': _internships,
++        'cooperatives': _cooperatives,
++        'furtherTraining': _furtherTraining,
++        'employer': _employerController.text,
++        'course': _courseController.text,
++        'successStory': _successStoryController.text,
++        'youthVoice': _youthVoiceController.text,
++        'rating': _rating,
++        'selectedQuality': _selectedQuality,
++        'selectedIssues': _selectedIssues,
++        'selectedFacilities': _selectedFacilities,
++        'selectedActivities': _selectedActivities,
++        'challenges': _challengesController.text,
++        'recommendations': _recommendationsController.text,
++        'urgency': _urgency,
++        'followUp': _followUpController.text,
++        'consentObtained': _consentObtained,
++        'twoAdultRule': _twoAdultRule,
++        'policyVisible': _policyVisible,
++        'noDiscrimination': _noDiscrimination,
++        'reportingMechanism': _reportingMechanism,
++        'idBadgeWorn': _idBadgeWorn,
++        'noPersonalContacts': _noPersonalContacts,
++        'giftsGuidelines': _giftsGuidelines,
++        'concernIdentified': _concernIdentified,
++        'concernDescription': _concernDescriptionController.text,
++        'actionTaken': _actionTakenController.text,
++        'reportedTo': _reportedToController.text,
++        'finalNotes': _finalNotesController.text,
++        'timeArrivedHour': _timeArrived?.hour,
++        'timeArrivedMinute': _timeArrived?.minute,
++        'timeDepartedHour': _timeDeparted?.hour,
++        'timeDepartedMinute': _timeDeparted?.minute,
++      };
++
++  void _applyFormData(Map<String, dynamic> d) {
++    List<String> strList(dynamic v) =>
++        v is List ? v.map((e) => e.toString()).toList() : <String>[];
++    int intOr(dynamic v, int fallback) => v is int ? v : fallback;
++
++    setState(() {
++      _currentStep = intOr(d['currentStep'], 0).clamp(0, 7);
++      _selectedZone = d['selectedZone'] ?? '';
++      _selectedHub = d['selectedHub'] ?? '';
++      _selectedCommunity = d['selectedCommunity'] ?? '';
++      _visitDate = DateTime.tryParse(d['visitDate'] ?? '') ?? DateTime.now();
++      _selectedVisitTypes = strList(d['selectedVisitTypes']);
++      _fullNameController.text = d['fullName'] ?? '';
++      _phoneController.text = d['phone'] ?? '';
++      _emailController.text = d['email'] ?? '';
++      _centreNameController.text = d['centreName'] ?? '';
++      _centreAddressController.text = d['centreAddress'] ?? '';
++      _contactPersonController.text = d['contactPerson'] ?? '';
++      _contactPhoneController.text = d['contactPhone'] ?? '';
++      _communityController.text = d['community'] ?? '';
++      _otherHubController.text = d['otherHub'] ?? '';
++      _youngMen = intOr(d['youngMen'], 0);
++      _youngWomen = intOr(d['youngWomen'], 0);
++      _pwd = intOr(d['pwd'], 0);
++      _staff = intOr(d['staff'], 0);
++      _trainers = intOr(d['trainers'], 0);
++      _formalJobs = intOr(d['formalJobs'], 0);
++      _internships = intOr(d['internships'], 0);
++      _cooperatives = intOr(d['cooperatives'], 0);
++      _furtherTraining = intOr(d['furtherTraining'], 0);
++      _employerController.text = d['employer'] ?? '';
++      _courseController.text = d['course'] ?? '';
++      _successStoryController.text = d['successStory'] ?? '';
++      _youthVoiceController.text = d['youthVoice'] ?? '';
++      _rating = intOr(d['rating'], 0);
++      _selectedQuality = strList(d['selectedQuality']);
++      _selectedIssues = strList(d['selectedIssues']);
++      _selectedFacilities = strList(d['selectedFacilities']);
++      _selectedActivities = strList(d['selectedActivities']);
++      _challengesController.text = d['challenges'] ?? '';
++      _recommendationsController.text = d['recommendations'] ?? '';
++      _urgency = d['urgency'] ?? 'No action needed';
++      _followUpController.text = d['followUp'] ?? '';
++      _consentObtained = d['consentObtained'] == true;
++      _twoAdultRule = d['twoAdultRule'] == true;
++      _policyVisible = d['policyVisible'] == true;
++      _noDiscrimination = d['noDiscrimination'] == true;
++      _reportingMechanism = d['reportingMechanism'] == true;
++      _idBadgeWorn = d['idBadgeWorn'] == true;
++      _noPersonalContacts = d['noPersonalContacts'] == true;
++      _giftsGuidelines = d['giftsGuidelines'] == true;
++      _concernIdentified = d['concernIdentified'] == true;
++      _concernDescriptionController.text = d['concernDescription'] ?? '';
++      _actionTakenController.text = d['actionTaken'] ?? '';
++      _reportedToController.text = d['reportedTo'] ?? '';
++      _finalNotesController.text = d['finalNotes'] ?? '';
++      if (d['timeArrivedHour'] is int) {
++        _timeArrived = TimeOfDay(
++            hour: d['timeArrivedHour'], minute: intOr(d['timeArrivedMinute'], 0));
++      }
++      if (d['timeDepartedHour'] is int) {
++        _timeDeparted = TimeOfDay(
++            hour: d['timeDepartedHour'], minute: intOr(d['timeDepartedMinute'], 0));
++      }
++    });
++  }
++
++  /// True when the user has actually typed something worth preserving.
++  bool get _formHasContent =>
++      _fullNameController.text.isNotEmpty ||
++      _centreNameController.text.isNotEmpty ||
++      _selectedZone.isNotEmpty ||
++      _selectedHub.isNotEmpty ||
++      _challengesController.text.isNotEmpty ||
++      _finalNotesController.text.isNotEmpty ||
++      _rating > 0 ||
++      _currentStep > 0;
++
++  Future<void> _saveDraft({bool silent = false}) async {
++    if (!mounted) return;
++    if (silent && !_formHasContent) return;
++
++    final draftService = Provider.of<DraftService>(context, listen: false);
++    await draftService.save(_collectFormData());
++    _lastSavedAt = DateTime.now();
++
++    if (!mounted) return;
++    if (silent) {
++      setState(() {}); // refresh the "saved at" indicator
++    } else {
++      ScaffoldMessenger.of(context).showSnackBar(
++        const SnackBar(
++          content: Text('Draft saved'),
++          backgroundColor: AppColors.success,
++          duration: Duration(seconds: 2),
++        ),
++      );
++    }
++  }
++
++  Future<void> _maybeRestoreDraft() async {
++    if (_draftRestored || !mounted) return;
++    _draftRestored = true;
++
++    final draftService = Provider.of<DraftService>(context, listen: false);
++    if (!draftService.hasDraft) return;
++
++    final savedAt = draftService.savedAt;
++    final when = savedAt == null ? 'earlier' : _friendlyTime(savedAt);
++
++    final restore = await showDialog<bool>(
++      context: context,
++      barrierDismissible: false,
++      builder: (context) => AlertDialog(
++        title: const Text('Resume draft?'),
++        content: Text(
++          'You have an unfinished report saved $when.\n\n'
++          'Would you like to continue where you left off?',
++        ),
++        actions: [
++          TextButton(
++            onPressed: () => Navigator.pop(context, false),
++            child: const Text('Start fresh'),
++          ),
++          ElevatedButton(
++            onPressed: () => Navigator.pop(context, true),
++            child: const Text('Resume'),
++          ),
++        ],
++      ),
++    );
++
++    if (!mounted) return;
++    if (restore == true) {
++      final data = draftService.load();
++      if (data != null) {
++        _applyFormData(data);
++        if (!mounted) return;
++        ScaffoldMessenger.of(context).showSnackBar(
++          const SnackBar(
++            content: Text('Draft restored'),
++            backgroundColor: AppColors.info,
++          ),
++        );
++      }
++    } else {
++      await draftService.clear();
++    }
++  }
++
++  String _friendlyTime(DateTime t) {
++    final diff = DateTime.now().difference(t);
++    if (diff.inMinutes < 1) return 'moments ago';
++    if (diff.inMinutes < 60) return '${diff.inMinutes} minute(s) ago';
++    if (diff.inHours < 24) return '${diff.inHours} hour(s) ago';
++    return '${diff.inDays} day(s) ago';
++  }
++
++  /// Intercepts back navigation so a part-filled form is never lost silently.
++  Future<bool> _onWillPop() async {
++    if (!_formHasContent) return true;
++
++    final action = await showDialog<String>(
++      context: context,
++      builder: (context) => AlertDialog(
++        title: const Text('Leave this report?'),
++        content: const Text('Your progress can be saved as a draft.'),
++        actions: [
++          TextButton(
++            onPressed: () => Navigator.pop(context, 'cancel'),
++            child: const Text('Keep editing'),
++          ),
++          TextButton(
++            onPressed: () => Navigator.pop(context, 'discard'),
++            child: const Text('Discard',
++                style: TextStyle(color: AppColors.error)),
++          ),
++          ElevatedButton(
++            onPressed: () => Navigator.pop(context, 'save'),
++            child: const Text('Save draft'),
++          ),
++        ],
++      ),
++    );
++
++    if (action == 'save') {
++      await _saveDraft(silent: true);
++      return true;
++    }
++    if (action == 'discard') {
++      if (!mounted) return true;
++      await Provider.of<DraftService>(context, listen: false).clear();
++      return true;
++    }
++    return false;
+   }
+ 
+   Future<void> _submitReport() async {
+@@ -908,6 +1195,11 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
+       final reportService = Provider.of<ReportService>(context, listen: false);
+       await reportService.createReport(report: report);
+ 
++      // Submitted successfully - the draft is no longer needed.
++      _autoSaveTimer?.cancel();
++      if (!mounted) return;
++      await Provider.of<DraftService>(context, listen: false).clear();
++
+       if (!mounted) return;
+       showDialog(
+         context: context,
+diff --git a/lib/screens/settings_screen.dart b/lib/screens/settings_screen.dart
+index e015185..c420803 100644
+--- a/lib/screens/settings_screen.dart
++++ b/lib/screens/settings_screen.dart
+@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
+ import 'package:provider/provider.dart';
+ import 'package:yiw_field_report/services/auth_service.dart';
+ import 'package:yiw_field_report/services/offline_service.dart';
++import 'package:yiw_field_report/services/theme_service.dart';
+ import 'package:yiw_field_report/theme/colors.dart';
+ 
+ class SettingsScreen extends StatefulWidget {
+@@ -12,7 +13,6 @@ class SettingsScreen extends StatefulWidget {
+ }
+ 
+ class _SettingsScreenState extends State<SettingsScreen> {
+-  bool _darkMode = false;
+   bool _notificationsEnabled = true;
+   bool _offlineMode = true;
+ 
+@@ -24,11 +24,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
+ 
+   Future<void> _loadSettings() async {
+     final offlineService = Provider.of<OfflineService>(context, listen: false);
+-    final darkMode = await offlineService.getSetting('darkMode');
+     final notifications = await offlineService.getSetting('notifications');
+     final offline = await offlineService.getSetting('offlineMode');
+     setState(() {
+-      _darkMode = darkMode ?? false;
+       _notificationsEnabled = notifications ?? true;
+       _offlineMode = offline ?? true;
+     });
+@@ -90,18 +88,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
+               children: [
+                 const Text('App Settings', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+                 const SizedBox(height: 16),
+-                SwitchListTile(
+-                  title: const Text('Dark Mode'),
+-                  subtitle: const Text('Switch between light and dark theme'),
+-                  value: _darkMode,
+-                  onChanged: (value) {
+-                    setState(() { _darkMode = value; });
+-                    _saveSetting('darkMode', value);
+-                    ScaffoldMessenger.of(context).showSnackBar(
+-                      SnackBar(content: Text('Dark mode ${value ? "enabled" : "disabled"}')),
+-                    );
+-                  },
+-                  secondary: const Icon(Icons.dark_mode_outlined),
++                Consumer<ThemeService>(
++                  builder: (context, themeService, _) => SwitchListTile(
++                    title: const Text('Dark Mode'),
++                    subtitle: const Text('Switch between light and dark theme'),
++                    value: themeService.isDarkMode,
++                    onChanged: (value) => themeService.setDarkMode(value),
++                    secondary: Icon(
++                      themeService.isDarkMode
++                          ? Icons.dark_mode
++                          : Icons.dark_mode_outlined,
++                    ),
++                  ),
+                 ),
+                 const Divider(),
+                 SwitchListTile(
+diff --git a/lib/services/draft_service.dart b/lib/services/draft_service.dart
+new file mode 100644
+index 0000000..6a43d2d
+--- /dev/null
++++ b/lib/services/draft_service.dart
+@@ -0,0 +1,58 @@
++import 'dart:convert';
++import 'package:flutter/material.dart';
++import 'package:hive/hive.dart';
++
++/// Stores a raw snapshot of the in-progress report form.
++///
++/// Deliberately does NOT use [FieldReport]: that model's `toJson()` is lossy
++/// (it drops ratings, quality indicators, challenges, notes, etc.), so a draft
++/// round-tripped through it would silently lose most of the user's typing.
++/// Here we persist the flat form state exactly as entered.
++class DraftService {
++  static const String _boxName = 'drafts';
++  static const String _activeDraftKey = 'active_form_draft';
++
++  Box<String> get _box => Hive.box<String>(_boxName);
++
++  /// True when there is an unfinished form waiting to be resumed.
++  bool get hasDraft => _box.containsKey(_activeDraftKey);
++
++  Future<void> save(Map<String, dynamic> data) async {
++    try {
++      final payload = <String, dynamic>{
++        ...data,
++        'savedAt': DateTime.now().toIso8601String(),
++      };
++      await _box.put(_activeDraftKey, jsonEncode(payload));
++    } catch (e) {
++      debugPrint('DraftService: failed to save draft: $e');
++    }
++  }
++
++  Map<String, dynamic>? load() {
++    try {
++      final raw = _box.get(_activeDraftKey);
++      if (raw == null) return null;
++      return jsonDecode(raw) as Map<String, dynamic>;
++    } catch (e) {
++      debugPrint('DraftService: failed to read draft: $e');
++      return null;
++    }
++  }
++
++  /// When the draft was last written, or null if there is no draft.
++  DateTime? get savedAt {
++    final data = load();
++    final raw = data?['savedAt'];
++    if (raw is! String) return null;
++    return DateTime.tryParse(raw);
++  }
++
++  Future<void> clear() async {
++    try {
++      await _box.delete(_activeDraftKey);
++    } catch (e) {
++      debugPrint('DraftService: failed to clear draft: $e');
++    }
++  }
++}
+diff --git a/lib/services/theme_service.dart b/lib/services/theme_service.dart
+new file mode 100644
+index 0000000..ec4895c
+--- /dev/null
++++ b/lib/services/theme_service.dart
+@@ -0,0 +1,40 @@
++import 'package:flutter/material.dart';
++import 'package:yiw_field_report/services/offline_service.dart';
++
++/// Holds the app-wide theme mode and persists it to the Hive `settings` box.
++///
++/// The app already ships a fully defined [AppTheme.darkTheme]; before this
++/// service existed `app.dart` hardcoded `ThemeMode.light`, so the dark theme
++/// was unreachable.
++class ThemeService extends ChangeNotifier {
++  static const String _settingKey = 'darkMode';
++
++  final OfflineService _offlineService;
++  bool _isDarkMode = false;
++
++  ThemeService(this._offlineService);
++
++  bool get isDarkMode => _isDarkMode;
++
++  ThemeMode get themeMode => _isDarkMode ? ThemeMode.dark : ThemeMode.light;
++
++  /// Reads the saved preference. Call once during startup.
++  Future<void> load() async {
++    try {
++      final saved = await _offlineService.getSetting(_settingKey);
++      _isDarkMode = saved == true;
++      notifyListeners();
++    } catch (e) {
++      debugPrint('ThemeService: could not load theme preference: $e');
++    }
++  }
++
++  Future<void> setDarkMode(bool value) async {
++    if (_isDarkMode == value) return;
++    _isDarkMode = value;
++    notifyListeners();
++    await _offlineService.saveSetting(_settingKey, value);
++  }
++
++  Future<void> toggle() => setDarkMode(!_isDarkMode);
++}
+diff --git a/lib/theme/app_theme.dart b/lib/theme/app_theme.dart
+index 0a6d9a5..a9ec664 100644
+--- a/lib/theme/app_theme.dart
++++ b/lib/theme/app_theme.dart
+@@ -163,6 +163,45 @@ class AppTheme {
+         color: AppColorsDark.divider,
+         thickness: 1,
+       ),
++      // Explicit surface/text theming so screens flip white -> black properly.
++      canvasColor: AppColorsDark.surface,
++      cardColor: AppColorsDark.card,
++      dialogTheme: DialogThemeData(
++        backgroundColor: AppColorsDark.card,
++        titleTextStyle: const TextStyle(
++          color: AppColorsDark.textPrimary,
++          fontSize: 20,
++          fontWeight: FontWeight.w600,
++        ),
++        contentTextStyle: const TextStyle(
++          color: AppColorsDark.textPrimary,
++          fontSize: 14,
++        ),
++      ),
++      bottomNavigationBarTheme: const BottomNavigationBarThemeData(
++        backgroundColor: AppColorsDark.surface,
++        selectedItemColor: AppColors.primaryLight,
++        unselectedItemColor: AppColorsDark.textSecondary,
++        type: BottomNavigationBarType.fixed,
++      ),
++      bottomSheetTheme: const BottomSheetThemeData(
++        backgroundColor: AppColorsDark.card,
++      ),
++      listTileTheme: const ListTileThemeData(
++        textColor: AppColorsDark.textPrimary,
++        iconColor: AppColorsDark.textSecondary,
++      ),
++      expansionTileTheme: const ExpansionTileThemeData(
++        textColor: AppColorsDark.textPrimary,
++        collapsedTextColor: AppColorsDark.textPrimary,
++        iconColor: AppColorsDark.textSecondary,
++        collapsedIconColor: AppColorsDark.textSecondary,
++      ),
++      iconTheme: const IconThemeData(color: AppColorsDark.textSecondary),
++      textTheme: Typography.whiteMountainView.apply(
++        bodyColor: AppColorsDark.textPrimary,
++        displayColor: AppColorsDark.textPrimary,
++      ),
+     );
+   }
+ }
+diff --git a/lib/widgets/horizontal_form_field.dart b/lib/widgets/horizontal_form_field.dart
+index bacdaf9..899651e 100644
+--- a/lib/widgets/horizontal_form_field.dart
++++ b/lib/widgets/horizontal_form_field.dart
+@@ -28,7 +28,7 @@ class HorizontalFormField extends StatelessWidget {
+                 style: TextStyle(
+                   fontSize: 13,
+                   fontWeight: FontWeight.w500,
+-                  color: required ? Colors.black87 : Colors.grey[700],
++                  color: Theme.of(context).textTheme.bodyLarge?.color?.withOpacity(required ? 0.87 : 0.6),
+                 ),
+               ),
+             ),
