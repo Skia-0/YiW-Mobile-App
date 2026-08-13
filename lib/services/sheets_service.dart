@@ -8,6 +8,7 @@ import 'package:yiw_field_report/models/field_report.dart';
 class SheetsService {
   String? _spreadsheetId;
   String? _credentialsJson;
+  List<String>? _existingSheets;
 
   Future<void> _loadConfig() async {
     if (_spreadsheetId != null) return;
@@ -33,6 +34,152 @@ class SheetsService {
     }
   }
 
+  Future<sheets.SheetsApi> _getSheetsApi() async {
+    final credentials = ServiceAccountCredentials.fromJson(_credentialsJson!);
+    final client = await clientViaServiceAccount(
+      credentials,
+      [sheets.SheetsApi.spreadsheetsScope],
+    );
+    return sheets.SheetsApi(client);
+  }
+
+  // Get all existing sheet/tab names
+  Future<List<String>> _getExistingSheets(sheets.SheetsApi sheetsApi) async {
+    if (_existingSheets != null) return _existingSheets!;
+    
+    try {
+      final spreadsheet = await sheetsApi.spreadsheets.get(_spreadsheetId!);
+      _existingSheets = spreadsheet.sheets!
+          .map((sheet) => sheet.properties!.title!)
+          .toList();
+      debugPrint('Existing sheets: $_existingSheets');
+      return _existingSheets!;
+    } catch (e) {
+      debugPrint('Error getting existing sheets: $e');
+      return [];
+    }
+  }
+
+  // Find matching sheet name (case-insensitive)
+  String? _findMatchingSheet(String targetName, List<String> existingSheets) {
+    final normalizedTarget = targetName.toLowerCase().trim();
+    
+    for (final sheet in existingSheets) {
+      if (sheet.toLowerCase().trim() == normalizedTarget) {
+        return sheet; // Return the existing sheet name (preserves original casing)
+      }
+    }
+    return null;
+  }
+
+  // Create a new sheet/tab if it doesn't exist
+  Future<String?> _createSheetIfNotExists(sheets.SheetsApi sheetsApi, String sheetName) async {
+    try {
+      final existingSheets = await _getExistingSheets(sheetsApi);
+      
+      // Check if sheet already exists (case-insensitive)
+      final existingMatch = _findMatchingSheet(sheetName, existingSheets);
+      if (existingMatch != null) {
+        debugPrint('Sheet "$sheetName" already exists as "$existingMatch"');
+        return existingMatch;
+      }
+      
+      // Create new sheet
+      debugPrint('Creating new sheet: $sheetName');
+      
+      final request = sheets.BatchUpdateSpreadsheetRequest(
+        requests: [
+          sheets.Request(
+            addSheet: sheets.AddSheetRequest(
+              properties: sheets.SheetProperties(
+                title: sheetName,
+              ),
+            ),
+          ),
+        ],
+      );
+      
+      await sheetsApi.spreadsheets.batchUpdate(request, _spreadsheetId!);
+      
+      // Add headers to new sheet
+      await _addSheetHeaders(sheetsApi, sheetName);
+      
+      // Update cached list
+      _existingSheets?.add(sheetName);
+      
+      debugPrint('Created sheet: $sheetName');
+      return sheetName;
+    } catch (e) {
+      debugPrint('Error creating sheet "$sheetName": $e');
+      return null;
+    }
+  }
+
+  // Add headers to a sheet
+  Future<void> _addSheetHeaders(sheets.SheetsApi sheetsApi, String sheetName) async {
+    try {
+      final headers = [
+        'Submitted At',
+        'Field Personnel Name',
+        'Phone',
+        'Zone',
+        'Visit Date',
+        'Visit Type',
+        'Hub / TSP',
+        'Community',
+        'Training Centre',
+        'Time Arrived',
+        'Time Departed',
+        'Male',
+        'Female',
+        'PWD',
+        'Staff',
+        'Trainers',
+        'Total Youth',
+        'Formal Jobs',
+        'Internships',
+        'Cooperatives',
+        'Further Training',
+        'Total Activations',
+        'Enrolments (M)',
+        'Enrolments (F)',
+        'Course',
+        'Employer',
+        'Sector',
+        'Hub Rating',
+        'Quality Indicators',
+        'Issues Flagged',
+        'Facilities',
+        'Activities',
+        'Challenges',
+        'Recommendations',
+        'Urgency',
+        'Follow-up By',
+        'Partners Count',
+        'Partner Notes',
+        'Safeguarding Items',
+        'Safeguarding Details',
+        'Concern Raised',
+        'Concern Detail',
+        'Final Notes',
+        'Status',
+      ];
+
+      final request = sheets.ValueRange(values: [headers]);
+
+      await sheetsApi.spreadsheets.values.update(
+        request,
+        _spreadsheetId!,
+        '$sheetName!A1',
+        valueInputOption: 'RAW',
+      );
+      
+      debugPrint('Added headers to sheet: $sheetName');
+    } catch (e) {
+      debugPrint('Error adding headers to sheet "$sheetName": $e');
+    }
+  }
+
   Future<void> addReportToSheet(FieldReport report) async {
     try {
       await _loadConfig();
@@ -43,32 +190,53 @@ class SheetsService {
 
       debugPrint('Adding report ${report.id} to Google Sheet...');
 
-      final credentials = ServiceAccountCredentials.fromJson(_credentialsJson!);
-      final client = await clientViaServiceAccount(
-        credentials,
-        [sheets.SheetsApi.spreadsheetsScope],
-      );
-
-      final sheetsApi = sheets.SheetsApi(client);
+      final sheetsApi = await _getSheetsApi();
       final row = _prepareRowData(report);
 
-      final request = sheets.ValueRange(values: [row]);
+      // 1. Add to main "Field Reports" tab
+      await _addToSheet(sheetsApi, 'Field Reports', row);
+      
+      // 2. Add to zone-specific tab
+      final zone = report.focalPerson.zone;
+      if (zone.isNotEmpty) {
+        final zoneSheet = await _createSheetIfNotExists(sheetsApi, zone);
+        if (zoneSheet != null) {
+          await _addToSheet(sheetsApi, zoneSheet, row);
+        }
+      }
+      
+      // 3. Add to hub-specific tab (optional)
+      final hub = report.trainingCentre.hub;
+      if (hub.isNotEmpty && hub != 'Other') {
+        final hubSheet = await _createSheetIfNotExists(sheetsApi, 'Hub - $hub');
+        if (hubSheet != null) {
+          await _addToSheet(sheetsApi, hubSheet, row);
+        }
+      }
 
-      await sheetsApi.spreadsheets.values.append(
-        request,
-        _spreadsheetId!,
-        'Field Reports!A:AQ',
-        valueInputOption: 'USER_ENTERED',
-      );
-
-      client.close();
       debugPrint('Report added to Google Sheet successfully');
     } catch (e) {
       debugPrint('Error adding report to Google Sheet: $e');
     }
   }
 
-  // This method matches the exact column order of the existing spreadsheet
+  Future<void> _addToSheet(sheets.SheetsApi sheetsApi, String sheetName, List<dynamic> row) async {
+    try {
+      final request = sheets.ValueRange(values: [row]);
+
+      await sheetsApi.spreadsheets.values.append(
+        request,
+        _spreadsheetId!,
+        '$sheetName!A:AZ',
+        valueInputOption: 'USER_ENTERED',
+      );
+      
+      debugPrint('Added row to sheet: $sheetName');
+    } catch (e) {
+      debugPrint('Error adding row to sheet "$sheetName": $e');
+    }
+  }
+
   List<dynamic> _prepareRowData(FieldReport report) {
     return [
       // A: Submitted At
@@ -101,11 +269,11 @@ class SheetsService {
       report.attendance.personsWithDisability,
       // O: Staff
       report.attendance.hubStaffOnDuty,
-      // P: Number of Trainers
+      // P: Trainers
       report.attendance.trainersPresent,
       // Q: Total Youth
       report.attendance.totalYouth,
-      // R: Number of Formal Jobs
+      // R: Formal Jobs
       report.employmentOutcome.placedInFormalEmployment,
       // S: Internships
       report.employmentOutcome.placedInInternships,
@@ -133,34 +301,32 @@ class SheetsService {
       report.issuesFlagged.join('; '),
       // AE: Facilities
       report.facilitiesAvailable.join('; '),
-      // AF: Challenges
+      // AF: Activities
+      report.activitiesObserved.join('; '),
+      // AG: Challenges
       report.challengesObserved ?? '',
-      // AG: Partners Count
+      // AH: Recommendations
+      report.recommendations ?? '',
+      // AI: Urgency
+      report.urgencyOfAction ?? '',
+      // AJ: Follow-up By
+      report.followUpBy ?? '',
+      // AK: Partners Count
       report.partnerCompanies.length,
-      // AH: Total Files
-      report.photoPaths.length + report.videoPaths.length + report.documentPaths.length,
-      // AI: Attendance Docs
-      report.attendanceSheetPaths.length,
-      // AJ: Financial Docs
-      report.financialDocPaths.length,
-      // AK: MoUs
-      report.mouPaths.length,
-      // AL: Tracking Sheets
-      report.trackingSheetPaths.length,
-      // AM: Photos
-      report.photoPaths.length,
-      // AN: Videos
-      report.videoPaths.length,
-      // AO: Safeguarding Items
+      // AL: Partner Notes
+      report.partnerEngagementNotes ?? '',
+      // AM: Safeguarding Items
       _getSafeguardingCount(report.safeguarding),
-      // AP: Safeguarding Details
+      // AN: Safeguarding Details
       _getSafeguardingDetails(report.safeguarding),
-      // AQ: Concern Raised
+      // AO: Concern Raised
       report.safeguarding.concernIdentified ? 'Yes' : 'No',
-      // AR: Concern Detail
+      // AP: Concern Detail
       report.safeguarding.concernDescription ?? '',
-      // AS: Final Notes
+      // AQ: Final Notes
       report.finalNotes ?? '',
+      // AR: Status
+      report.status,
     ];
   }
 
