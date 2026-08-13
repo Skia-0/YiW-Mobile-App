@@ -163,6 +163,45 @@ class AppTheme {
         color: AppColorsDark.divider,
         thickness: 1,
       ),
+      // Explicit surface/text theming so screens flip white -> black properly.
+      canvasColor: AppColorsDark.surface,
+      cardColor: AppColorsDark.card,
+      dialogTheme: DialogThemeData(
+        backgroundColor: AppColorsDark.card,
+        titleTextStyle: const TextStyle(
+          color: AppColorsDark.textPrimary,
+          fontSize: 20,
+          fontWeight: FontWeight.w600,
+        ),
+        contentTextStyle: const TextStyle(
+          color: AppColorsDark.textPrimary,
+          fontSize: 14,
+        ),
+      ),
+      bottomNavigationBarTheme: const BottomNavigationBarThemeData(
+        backgroundColor: AppColorsDark.surface,
+        selectedItemColor: AppColors.primaryLight,
+        unselectedItemColor: AppColorsDark.textSecondary,
+        type: BottomNavigationBarType.fixed,
+      ),
+      bottomSheetTheme: const BottomSheetThemeData(
+        backgroundColor: AppColorsDark.card,
+      ),
+      listTileTheme: const ListTileThemeData(
+        textColor: AppColorsDark.textPrimary,
+        iconColor: AppColorsDark.textSecondary,
+      ),
+      expansionTileTheme: const ExpansionTileThemeData(
+        textColor: AppColorsDark.textPrimary,
+        collapsedTextColor: AppColorsDark.textPrimary,
+        iconColor: AppColorsDark.textSecondary,
+        collapsedIconColor: AppColorsDark.textSecondary,
+      ),
+      iconTheme: const IconThemeData(color: AppColorsDark.textSecondary),
+      textTheme: Typography.whiteMountainView.apply(
+        bodyColor: AppColorsDark.textPrimary,
+        displayColor: AppColorsDark.textPrimary,
+      ),
     );
   }
 }

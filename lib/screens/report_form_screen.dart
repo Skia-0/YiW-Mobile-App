@@ -8,8 +8,10 @@ import 'package:yiw_field_report/models/employment_outcome.dart';
 import 'package:yiw_field_report/models/safeguarding.dart';
 import 'package:yiw_field_report/services/report_service.dart';
 import 'package:yiw_field_report/services/auth_service.dart';
+import 'package:yiw_field_report/services/draft_service.dart';
 import 'package:yiw_field_report/theme/colors.dart';
 import 'package:yiw_field_report/config/app_config.dart';
+import 'dart:async';
 
 class ReportFormScreen extends StatefulWidget {
   const ReportFormScreen({super.key});
@@ -24,6 +26,11 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
   bool _isSubmitting = false;
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
+
+  // Draft auto-save
+  Timer? _autoSaveTimer;
+  DateTime? _lastSavedAt;
+  bool _draftRestored = false;
   
   // Form data
   String _selectedZone = '';
@@ -96,10 +103,18 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
     _animationController = AnimationController(vsync: this, duration: const Duration(milliseconds: 300));
     _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(CurvedAnimation(parent: _animationController, curve: Curves.easeInOut));
     _animationController.forward();
+
+    // Offer to restore a previous unfinished form, then start auto-saving.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _maybeRestoreDraft());
+    _autoSaveTimer = Timer.periodic(
+      const Duration(seconds: 30),
+      (_) => _saveDraft(silent: true),
+    );
   }
 
   @override
   void dispose() {
+    _autoSaveTimer?.cancel();
     _animationController.dispose();
     _fullNameController.dispose();
     _phoneController.dispose();
@@ -129,14 +144,33 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.grey[50],
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) async {
+        if (didPop) return;
+        final shouldPop = await _onWillPop();
+        if (shouldPop && mounted) Navigator.of(context).pop();
+      },
+      child: Scaffold(
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       appBar: AppBar(
-        title: const Text('New Field Report'),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('New Field Report'),
+            if (_lastSavedAt != null)
+              Text(
+                'Draft saved ${_friendlyTime(_lastSavedAt!)}',
+                style: const TextStyle(
+                    fontSize: 11, color: Colors.white70, fontWeight: FontWeight.w400),
+              ),
+          ],
+        ),
         elevation: 0,
         actions: [
           TextButton.icon(
-            onPressed: _saveDraft,
+            onPressed: () => _saveDraft(),
             icon: const Icon(Icons.save_outlined, color: Colors.white),
             label: const Text('Save Draft', style: TextStyle(color: Colors.white)),
           ),
@@ -199,7 +233,7 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
-              color: Colors.white,
+              color: Theme.of(context).cardColor,
               boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, -5))],
             ),
             child: Row(
@@ -231,6 +265,7 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
           ),
         ],
       ),
+    ),
     );
   }
 
@@ -878,10 +913,6 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
     }
   }
 
-  void _saveDraft() {
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Draft saved'), backgroundColor: AppColors.success));
-  }
-
   Future<void> _submitReport() async {
     if (!_formKey.currentState!.validate()) return;
     setState(() { _isSubmitting = true; });
@@ -908,6 +939,10 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
       final reportService = Provider.of<ReportService>(context, listen: false);
       await reportService.createReport(report: report);
 
+      // Clear draft after successful submission
+      final draftService = Provider.of<DraftService>(context, listen: false);
+      await draftService.clear();
+
       if (!mounted) return;
       showDialog(
         context: context,
@@ -923,5 +958,202 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
     } finally {
       setState(() { _isSubmitting = false; });
     }
+  }
+
+  // Draft management methods
+  Map<String, dynamic> _formDataToMap() {
+    return {
+      'selectedZone': _selectedZone,
+      'selectedHub': _selectedHub,
+      'selectedCommunity': _selectedCommunity,
+      'visitDate': _visitDate.toIso8601String(),
+      'selectedVisitTypes': _selectedVisitTypes,
+      'fullName': _fullNameController.text,
+      'phone': _phoneController.text,
+      'email': _emailController.text,
+      'centreName': _centreNameController.text,
+      'centreAddress': _centreAddressController.text,
+      'contactPerson': _contactPersonController.text,
+      'contactPhone': _contactPhoneController.text,
+      'community': _communityController.text,
+      'youngMen': _youngMen,
+      'youngWomen': _youngWomen,
+      'pwd': _pwd,
+      'staff': _staff,
+      'trainers': _trainers,
+      'formalJobs': _formalJobs,
+      'internships': _internships,
+      'cooperatives': _cooperatives,
+      'furtherTraining': _furtherTraining,
+      'employer': _employerController.text,
+      'course': _courseController.text,
+      'successStory': _successStoryController.text,
+      'youthVoice': _youthVoiceController.text,
+      'rating': _rating,
+      'selectedQuality': _selectedQuality,
+      'selectedIssues': _selectedIssues,
+      'selectedFacilities': _selectedFacilities,
+      'selectedActivities': _selectedActivities,
+      'challenges': _challengesController.text,
+      'recommendations': _recommendationsController.text,
+      'urgency': _urgency,
+      'followUp': _followUpController.text,
+      'consentObtained': _consentObtained,
+      'twoAdultRule': _twoAdultRule,
+      'policyVisible': _policyVisible,
+      'noDiscrimination': _noDiscrimination,
+      'reportingMechanism': _reportingMechanism,
+      'idBadgeWorn': _idBadgeWorn,
+      'noPersonalContacts': _noPersonalContacts,
+      'giftsGuidelines': _giftsGuidelines,
+      'concernIdentified': _concernIdentified,
+      'concernDescription': _concernDescriptionController.text,
+      'actionTaken': _actionTakenController.text,
+      'reportedTo': _reportedToController.text,
+      'finalNotes': _finalNotesController.text,
+      'currentStep': _currentStep,
+    };
+  }
+
+  void _restoreFromMap(Map<String, dynamic> data) {
+    setState(() {
+      _selectedZone = data['selectedZone'] ?? '';
+      _selectedHub = data['selectedHub'] ?? '';
+      _selectedCommunity = data['selectedCommunity'] ?? '';
+      _visitDate = DateTime.tryParse(data['visitDate'] ?? '') ?? DateTime.now();
+      _selectedVisitTypes = List<String>.from(data['selectedVisitTypes'] ?? []);
+      _fullNameController.text = data['fullName'] ?? '';
+      _phoneController.text = data['phone'] ?? '';
+      _emailController.text = data['email'] ?? '';
+      _centreNameController.text = data['centreName'] ?? '';
+      _centreAddressController.text = data['centreAddress'] ?? '';
+      _contactPersonController.text = data['contactPerson'] ?? '';
+      _contactPhoneController.text = data['contactPhone'] ?? '';
+      _communityController.text = data['community'] ?? '';
+      _youngMen = data['youngMen'] ?? 0;
+      _youngWomen = data['youngWomen'] ?? 0;
+      _pwd = data['pwd'] ?? 0;
+      _staff = data['staff'] ?? 0;
+      _trainers = data['trainers'] ?? 0;
+      _formalJobs = data['formalJobs'] ?? 0;
+      _internships = data['internships'] ?? 0;
+      _cooperatives = data['cooperatives'] ?? 0;
+      _furtherTraining = data['furtherTraining'] ?? 0;
+      _employerController.text = data['employer'] ?? '';
+      _courseController.text = data['course'] ?? '';
+      _successStoryController.text = data['successStory'] ?? '';
+      _youthVoiceController.text = data['youthVoice'] ?? '';
+      _rating = data['rating'] ?? 0;
+      _selectedQuality = List<String>.from(data['selectedQuality'] ?? []);
+      _selectedIssues = List<String>.from(data['selectedIssues'] ?? []);
+      _selectedFacilities = List<String>.from(data['selectedFacilities'] ?? []);
+      _selectedActivities = List<String>.from(data['selectedActivities'] ?? []);
+      _challengesController.text = data['challenges'] ?? '';
+      _recommendationsController.text = data['recommendations'] ?? '';
+      _urgency = data['urgency'] ?? 'No action needed';
+      _followUpController.text = data['followUp'] ?? '';
+      _consentObtained = data['consentObtained'] ?? false;
+      _twoAdultRule = data['twoAdultRule'] ?? false;
+      _policyVisible = data['policyVisible'] ?? false;
+      _noDiscrimination = data['noDiscrimination'] ?? false;
+      _reportingMechanism = data['reportingMechanism'] ?? false;
+      _idBadgeWorn = data['idBadgeWorn'] ?? false;
+      _noPersonalContacts = data['noPersonalContacts'] ?? false;
+      _giftsGuidelines = data['giftsGuidelines'] ?? false;
+      _concernIdentified = data['concernIdentified'] ?? false;
+      _concernDescriptionController.text = data['concernDescription'] ?? '';
+      _actionTakenController.text = data['actionTaken'] ?? '';
+      _reportedToController.text = data['reportedTo'] ?? '';
+      _finalNotesController.text = data['finalNotes'] ?? '';
+      _currentStep = data['currentStep'] ?? 0;
+    });
+  }
+
+  Future<void> _saveDraft({bool silent = false}) async {
+    try {
+      final draftService = Provider.of<DraftService>(context, listen: false);
+      await draftService.save(_formDataToMap());
+      setState(() { _lastSavedAt = DateTime.now(); });
+      if (!silent && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Draft saved'), backgroundColor: AppColors.success),
+        );
+      }
+    } catch (e) {
+      if (!silent && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to save draft: $e'), backgroundColor: AppColors.error),
+        );
+      }
+    }
+  }
+
+  Future<void> _maybeRestoreDraft() async {
+    final draftService = Provider.of<DraftService>(context, listen: false);
+    if (!draftService.hasDraft) return;
+
+    final savedAt = draftService.savedAt;
+    final timeAgo = savedAt != null ? _friendlyTime(savedAt) : 'earlier';
+
+    final restore = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Unfinished Report'),
+        content: Text('You have an unfinished report from $timeAgo. Would you like to continue?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Discard')),
+          ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text('Continue')),
+        ],
+      ),
+    );
+
+    if (restore == true) {
+      final data = draftService.load();
+      if (data != null) {
+        _restoreFromMap(data);
+        setState(() { _draftRestored = true; });
+      }
+    } else {
+      await draftService.clear();
+    }
+  }
+
+  Future<bool> _onWillPop() async {
+    // If form is empty, just pop
+    if (_fullNameController.text.isEmpty && _phoneController.text.isEmpty) {
+      return true;
+    }
+
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Save Draft?'),
+        content: const Text('You have unsaved changes. Would you like to save as draft?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, 'discard'), child: const Text('Discard')),
+          TextButton(onPressed: () => Navigator.pop(context, 'cancel'), child: const Text('Cancel')),
+          ElevatedButton(onPressed: () => Navigator.pop(context, 'save'), child: const Text('Save Draft')),
+        ],
+      ),
+    );
+
+    if (result == 'save') {
+      await _saveDraft();
+      return true;
+    } else if (result == 'discard') {
+      final draftService = Provider.of<DraftService>(context, listen: false);
+      await draftService.clear();
+      return true;
+    }
+    return false;
+  }
+
+  String _friendlyTime(DateTime dt) {
+    final now = DateTime.now();
+    final diff = now.difference(dt);
+    if (diff.inSeconds < 60) return 'just now';
+    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+    if (diff.inHours < 24) return '${diff.inHours}h ago';
+    return '${diff.inDays}d ago';
   }
 }

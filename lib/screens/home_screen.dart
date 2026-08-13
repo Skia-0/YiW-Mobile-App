@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import 'package:yiw_field_report/services/auth_service.dart';
 import 'package:yiw_field_report/services/report_service.dart';
 import 'package:yiw_field_report/services/offline_service.dart';
+import 'package:yiw_field_report/services/theme_service.dart';
 import 'package:yiw_field_report/theme/colors.dart';
 import 'package:yiw_field_report/widgets/dashboard_card.dart';
 
@@ -16,7 +17,6 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   int _currentIndex = 0;
   bool _isLoading = true;
-  bool _darkMode = false;
   bool _notificationsEnabled = true;
   bool _offlineMode = true;
 
@@ -40,11 +40,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _loadSettings() async {
     final offlineService = Provider.of<OfflineService>(context, listen: false);
-    final darkMode = await offlineService.getSetting('darkMode');
     final notifications = await offlineService.getSetting('notifications');
     final offline = await offlineService.getSetting('offlineMode');
     setState(() {
-      _darkMode = darkMode ?? false;
       _notificationsEnabled = notifications ?? true;
       _offlineMode = offline ?? true;
     });
@@ -77,8 +75,16 @@ class _HomeScreenState extends State<HomeScreen> {
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _currentIndex,
         onTap: (index) { setState(() { _currentIndex = index; }); },
-        selectedItemColor: AppColors.primary,
-        unselectedItemColor: AppColors.textSecondary,
+        selectedItemColor: Theme.of(context).brightness == Brightness.dark
+            ? AppColors.primaryLight
+            : AppColors.primary,
+        unselectedItemColor: Theme.of(context).brightness == Brightness.dark
+            ? AppColorsDark.textSecondary
+            : AppColors.textSecondary,
+        backgroundColor: Theme.of(context).brightness == Brightness.dark
+            ? AppColorsDark.surface
+            : Colors.white,
+        type: BottomNavigationBarType.fixed,
         items: const [
           BottomNavigationBarItem(icon: Icon(Icons.dashboard_outlined), activeIcon: Icon(Icons.dashboard), label: 'Dashboard'),
           BottomNavigationBarItem(icon: Icon(Icons.description_outlined), activeIcon: Icon(Icons.description), label: 'Reports'),
@@ -347,16 +353,16 @@ class _HomeScreenState extends State<HomeScreen> {
               children: [
                 const Text('App Settings', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
                 const SizedBox(height: 16),
-                SwitchListTile(
-                  title: const Text('Dark Mode'),
-                  subtitle: const Text('Switch between light and dark theme'),
-                  value: _darkMode,
-                  onChanged: (value) {
-                    setState(() { _darkMode = value; });
-                    _saveSetting('darkMode', value);
-                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Dark mode ${value ? "enabled" : "disabled"}'), backgroundColor: AppColors.info));
-                  },
-                  secondary: const Icon(Icons.dark_mode_outlined),
+                Consumer<ThemeService>(
+                  builder: (context, themeService, _) => SwitchListTile(
+                    title: const Text('Dark Mode'),
+                    subtitle: const Text('Switch between light and dark theme'),
+                    value: themeService.isDarkMode,
+                    onChanged: (value) => themeService.setDarkMode(value),
+                    secondary: Icon(themeService.isDarkMode
+                        ? Icons.dark_mode
+                        : Icons.dark_mode_outlined),
+                  ),
                 ),
                 const Divider(),
                 SwitchListTile(

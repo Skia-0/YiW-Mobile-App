@@ -28,7 +28,7 @@ class HorizontalFormField extends StatelessWidget {
                 style: TextStyle(
                   fontSize: 13,
                   fontWeight: FontWeight.w500,
-                  color: required ? Colors.black87 : Colors.grey[700],
+                  color: Theme.of(context).textTheme.bodyLarge?.color?.withOpacity(required ? 0.87 : 0.6),
                 ),
               ),
             ),

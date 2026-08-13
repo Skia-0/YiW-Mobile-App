@@ -8,18 +8,21 @@ import 'package:yiw_field_report/screens/saved_reports_screen.dart';
 import 'package:yiw_field_report/screens/settings_screen.dart';
 import 'package:yiw_field_report/screens/register_screen.dart';
 import 'package:yiw_field_report/services/auth_service.dart';
+import 'package:yiw_field_report/services/theme_service.dart';
 
 class YiWFieldReportApp extends StatelessWidget {
   const YiWFieldReportApp({super.key});
 
   @override
   Widget build(BuildContext context) {
+    final themeService = context.watch<ThemeService>();
+
     return MaterialApp(
       title: 'YiW Field Report',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.lightTheme,
       darkTheme: AppTheme.darkTheme,
-      themeMode: ThemeMode.light,
+      themeMode: themeService.themeMode,
       home: const SplashScreen(),
       routes: {
         '/login': (context) => const LoginScreen(),
@@ -49,12 +52,12 @@ class _SplashScreenState extends State<SplashScreen> {
 
   Future<void> _checkAuthAndNavigate() async {
     await Future.delayed(const Duration(seconds: 2));
-    
+
     if (!mounted) return;
-    
+
     final authService = Provider.of<AuthService>(context, listen: false);
     final isAuthenticated = authService.isAuthenticated;
-    
+
     if (isAuthenticated) {
       Navigator.pushReplacementNamed(context, '/home');
     } else {
