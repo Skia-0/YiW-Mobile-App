@@ -39,17 +39,24 @@ class AppConfig {
       'AfriTech Hub',
       'The Assistance Hub',
       'Afrik Shea Butter',
+      'WUSC Tamale Office',
     ],
     'Western': [
       'Duapa Werkspace',
+      'MB Hub',
+      'His Majesty Farms',
     ],
-    'Central': [],
+    'Central': [
+      'Wo\'Afrique Tech Hub',
+    ],
     'Eastern': [
       'Agritech',
       'Qet Farms',
     ],
     'Volta': [
       'Sabon Sake',
+      'Home Choice Tasty Food',
+      'Nneka Youth Foundation',
     ],
     'Upper East': [
       'Dansyn ISO',
@@ -77,22 +84,28 @@ class AppConfig {
 
   // Communities by Hub
   static const Map<String, List<String>> communitiesByHub = {
-    'Accra Technical University': ['ATU Campus', 'Accra Central'],
+    'Accra Technical University': ['ATU Campus', 'Accra Central', 'Accra'],
     'Kumasi City Incubation Hub': ['Boadi'],
     'AfriTech Hub': ['Gbanyamni'],
-    'The Assistance Hub': ['Kanvili', 'Kanvili (Jana)'],
+    'The Assistance Hub': ['Kanvili', 'Kanvili (Jana)', 'Jana Community', 'Kulkpeni', 'Tamale Metro', 'Tamale Centre'],
     'Afrik Shea Butter': ['Sakasaka'],
-    'Duapa Werkspace': ['Takoradi', 'Anaji', 'Takoradi, Anaji'],
+    'WUSC Tamale Office': ['Kanvili'],
+    'Duapa Werkspace': ['Takoradi', 'Anaji', 'Takoradi, Anaji', 'Effia Kuma and Fijai', 'Ahanta West'],
+    'MB Hub': ['Anaji'],
+    'His Majesty Farms': ['Ahanta West'],
+    'Wo\'Afrique Tech Hub': ['Winneba'],
     'Agritech': ['Teacher Mante'],
-    'Qet Farms': ['Mame Dede'],
-    'Sabon Sake': ['Sogakope', 'Sogakope, Dabala'],
+    'Qet Farms': ['Mame Dede', 'Teacher Mante'],
+    'Sabon Sake': ['Sogakope', 'Sogakope, Dabala', 'Ve Agbome', 'Dabala', 'Aveyime', 'Mafi-Dedukope'],
+    'Home Choice Tasty Food': ['Sogakope'],
+    'Nneka Youth Foundation': ['Ve Agbome'],
     'Dansyn ISO': ['Bolgatanga'],
-    'Noni Hub': ['Wa'],
+    'Noni Hub': ['Wa', 'Nakori', 'Guli', 'Ami Wan', 'Busa'],
     'Agrico Hub': ['Techiman'],
     'Ketiwa Enterprise': ['Goaso'],
     'Innovation Light LGB': ['Gambaga'],
-    'Northern Innovation Lab Foundation': ['Nasia'],
-    'Rutab Hub': ['Kesekrom'],
+    'Northern Innovation Lab Foundation': ['Nasia', 'Walewale', 'Gbimsi', 'Wulugu'],
+    'Rutab Hub': ['Kesekrom', 'Boako'],
   };
 
   // Visit Types
