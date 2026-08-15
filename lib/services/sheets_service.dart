@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:googleapis/sheets/v4.dart' as sheets;
 import 'package:googleapis_auth/auth_io.dart';
@@ -8,7 +9,6 @@ import 'package:yiw_field_report/models/field_report.dart';
 class SheetsService {
   String? _spreadsheetId;
   String? _credentialsJson;
-  List<String>? _existingSheets;
 
   Future<void> _loadConfig() async {
     if (_spreadsheetId != null) return;
@@ -34,209 +34,225 @@ class SheetsService {
     }
   }
 
-  Future<sheets.SheetsApi> _getSheetsApi() async {
-    final credentials = ServiceAccountCredentials.fromJson(_credentialsJson!);
-    final client = await clientViaServiceAccount(
-      credentials,
-      [sheets.SheetsApi.spreadsheetsScope],
-    );
-    return sheets.SheetsApi(client);
-  }
-
-  // Get all existing sheet/tab names
-  Future<List<String>> _getExistingSheets(sheets.SheetsApi sheetsApi) async {
-    if (_existingSheets != null) return _existingSheets!;
-    
-    try {
-      final spreadsheet = await sheetsApi.spreadsheets.get(_spreadsheetId!);
-      _existingSheets = spreadsheet.sheets!
-          .map((sheet) => sheet.properties!.title!)
-          .toList();
-      debugPrint('Existing sheets: $_existingSheets');
-      return _existingSheets!;
-    } catch (e) {
-      debugPrint('Error getting existing sheets: $e');
-      return [];
-    }
-  }
-
-  // Find matching sheet name (case-insensitive)
-  String? _findMatchingSheet(String targetName, List<String> existingSheets) {
-    final normalizedTarget = targetName.toLowerCase().trim();
-    
-    for (final sheet in existingSheets) {
-      if (sheet.toLowerCase().trim() == normalizedTarget) {
-        return sheet; // Return the existing sheet name (preserves original casing)
-      }
-    }
-    return null;
-  }
-
-  // Create a new sheet/tab if it doesn't exist
-  Future<String?> _createSheetIfNotExists(sheets.SheetsApi sheetsApi, String sheetName) async {
-    try {
-      final existingSheets = await _getExistingSheets(sheetsApi);
-      
-      // Check if sheet already exists (case-insensitive)
-      final existingMatch = _findMatchingSheet(sheetName, existingSheets);
-      if (existingMatch != null) {
-        debugPrint('Sheet "$sheetName" already exists as "$existingMatch"');
-        return existingMatch;
-      }
-      
-      // Create new sheet
-      debugPrint('Creating new sheet: $sheetName');
-      
-      final request = sheets.BatchUpdateSpreadsheetRequest(
-        requests: [
-          sheets.Request(
-            addSheet: sheets.AddSheetRequest(
-              properties: sheets.SheetProperties(
-                title: sheetName,
-              ),
-            ),
-          ),
-        ],
-      );
-      
-      await sheetsApi.spreadsheets.batchUpdate(request, _spreadsheetId!);
-      
-      // Add headers to new sheet
-      await _addSheetHeaders(sheetsApi, sheetName);
-      
-      // Update cached list
-      _existingSheets?.add(sheetName);
-      
-      debugPrint('Created sheet: $sheetName');
-      return sheetName;
-    } catch (e) {
-      debugPrint('Error creating sheet "$sheetName": $e');
-      return null;
-    }
-  }
-
-  // Add headers to a sheet
-  Future<void> _addSheetHeaders(sheets.SheetsApi sheetsApi, String sheetName) async {
-    try {
-      final headers = [
-        'Submitted At',
-        'Field Personnel Name',
-        'Phone',
-        'Zone',
-        'Visit Date',
-        'Visit Type',
-        'Hub / TSP',
-        'Community',
-        'Training Centre',
-        'Time Arrived',
-        'Time Departed',
-        'Male',
-        'Female',
-        'PWD',
-        'Staff',
-        'Trainers',
-        'Total Youth',
-        'Formal Jobs',
-        'Internships',
-        'Cooperatives',
-        'Further Training',
-        'Total Activations',
-        'Enrolments (M)',
-        'Enrolments (F)',
-        'Course',
-        'Employer',
-        'Sector',
-        'Hub Rating',
-        'Quality Indicators',
-        'Issues Flagged',
-        'Facilities',
-        'Activities',
-        'Challenges',
-        'Recommendations',
-        'Urgency',
-        'Follow-up By',
-        'Partners Count',
-        'Partner Notes',
-        'Safeguarding Items',
-        'Safeguarding Details',
-        'Concern Raised',
-        'Concern Detail',
-        'Final Notes',
-        'Status',
-      ];
-
-      final request = sheets.ValueRange(values: [headers]);
-
-      await sheetsApi.spreadsheets.values.update(
-        request,
-        _spreadsheetId!,
-        '$sheetName!A1',
-        valueInputOption: 'RAW',
-      );
-      
-      debugPrint('Added headers to sheet: $sheetName');
-    } catch (e) {
-      debugPrint('Error adding headers to sheet "$sheetName": $e');
-    }
-  }
+  static const String _sheetName = 'Field Reports';
 
   Future<void> addReportToSheet(FieldReport report) async {
+    AutoRefreshingAuthClient? client;
     try {
       await _loadConfig();
       if (_spreadsheetId == null || _credentialsJson == null) {
-        debugPrint('Sheets config not loaded');
-        return;
+        throw StateError(
+            'Sheets config missing - check spreadsheet_id and private_key in secrets.json');
       }
 
       debugPrint('Adding report ${report.id} to Google Sheet...');
 
-      final sheetsApi = await _getSheetsApi();
+      final credentials = ServiceAccountCredentials.fromJson(_credentialsJson!);
+      client = await clientViaServiceAccount(
+        credentials,
+        [sheets.SheetsApi.spreadsheetsScope],
+      );
+
+      final sheetsApi = sheets.SheetsApi(client);
       final row = _prepareRowData(report);
 
-      // 1. Add to main "Field Reports" tab
-      await _addToSheet(sheetsApi, 'Field Reports', row);
-      
-      // 2. Add to zone-specific tab
-      final zone = report.focalPerson.zone;
-      if (zone.isNotEmpty) {
-        final zoneSheet = await _createSheetIfNotExists(sheetsApi, zone);
-        if (zoneSheet != null) {
-          await _addToSheet(sheetsApi, zoneSheet, row);
-        }
-      }
-      
-      // 3. Add to hub-specific tab (optional)
-      final hub = report.trainingCentre.hub;
-      if (hub.isNotEmpty && hub != 'Other') {
-        final hubSheet = await _createSheetIfNotExists(sheetsApi, 'Hub - $hub');
-        if (hubSheet != null) {
-          await _addToSheet(sheetsApi, hubSheet, row);
-        }
-      }
+      // 1. The master log - every report from every hub.
+      await _appendToTab(sheetsApi, _sheetName, row);
 
-      debugPrint('Report added to Google Sheet successfully');
+      // 2. The hub's own tab, so each hub has its own running sheet
+      //    alongside the general one.
+      final hubTab = hubTabName(report.trainingCentre.hub);
+      if (hubTab != null && hubTab != _sheetName) {
+        try {
+          await _appendToTab(sheetsApi, hubTab, row);
+        } catch (e) {
+          // The master log already has the report; don't fail the submit
+          // just because the per-hub copy didn't write.
+          debugPrint('Could not write hub tab "$hubTab": $e');
+        }
+      } else if (hubTab == null) {
+        debugPrint(
+            'No hub on report ${report.id}; logged to "$_sheetName" only');
+      }
     } catch (e) {
+      // Surfaced so a silent sheet failure doesn't look like success.
       debugPrint('Error adding report to Google Sheet: $e');
+      rethrow;
+    } finally {
+      client?.close();
     }
   }
 
-  Future<void> _addToSheet(sheets.SheetsApi sheetsApi, String sheetName, List<dynamic> row) async {
-    try {
-      final request = sheets.ValueRange(values: [row]);
 
-      await sheetsApi.spreadsheets.values.append(
-        request,
+  /// Appends one row to [tabName], creating and heading the tab if needed.
+  Future<void> _appendToTab(
+    sheets.SheetsApi api,
+    String tabName,
+    List<dynamic> row,
+  ) async {
+    // Make sure the tab exists and is headed, otherwise append throws
+    // "Unable to parse range" and the report silently never lands.
+    await _ensureSheetReady(api, tabName);
+
+    // append() writes after the last populated row, so the newest report
+    // always appears at the bottom of that tab.
+    final response = await api.spreadsheets.values.append(
+      sheets.ValueRange(values: [row]),
+      _spreadsheetId!,
+      "'$tabName'!A:AV",
+      valueInputOption: 'USER_ENTERED',
+      insertDataOption: 'INSERT_ROWS',
+    );
+    debugPrint(
+        'Appended to "$tabName" at ${response.updates?.updatedRange ?? "(unknown row)"}');
+  }
+
+  /// The tab a report belongs to, derived from its hub.
+  ///
+  /// Returns null when no hub was recorded. Google Sheets tab titles cannot
+  /// contain : \\ / ? * [ ] and are capped at 100 characters, so the hub name
+  /// is sanitised rather than used raw.
+  static String? hubTabName(String? hub) {
+    final name = hub?.trim() ?? '';
+    if (name.isEmpty) return null;
+    var clean = name.replaceAll(RegExp(r"[:\\/?*\[\]]"), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    if (clean.length > 100) clean = clean.substring(0, 100).trim();
+    return clean.isEmpty ? null : clean;
+  }
+
+  /// Creates a tab and its header row if they are absent.
+  ///
+  /// Without this, a renamed/missing tab or an empty sheet made every append
+  /// fail with an unhelpful parse error.
+  Future<void> _ensureSheetReady(sheets.SheetsApi api,
+      [String tabName = _sheetName]) async {
+    final spreadsheet = await api.spreadsheets.get(_spreadsheetId!);
+    final existing = spreadsheet.sheets
+            ?.map((s) => s.properties?.title)
+            .whereType<String>()
+            .toList() ??
+        <String>[];
+
+    if (!existing.contains(tabName)) {
+      debugPrint('Creating "$tabName" tab (found: ${existing.join(", ")})');
+      await api.spreadsheets.batchUpdate(
+        sheets.BatchUpdateSpreadsheetRequest(requests: [
+          sheets.Request(
+            addSheet: sheets.AddSheetRequest(
+              properties: sheets.SheetProperties(title: tabName),
+            ),
+          ),
+        ]),
         _spreadsheetId!,
-        '$sheetName!A:AZ',
-        valueInputOption: 'USER_ENTERED',
       );
-      
-      debugPrint('Added row to sheet: $sheetName');
-    } catch (e) {
-      debugPrint('Error adding row to sheet "$sheetName": $e');
+    }
+
+    // Header row: only write it when row 1 is empty, so an existing sheet
+    // with the team's own headers is left untouched.
+    final firstRow = await api.spreadsheets.values.get(
+      _spreadsheetId!,
+      "'$tabName'!A1:AV1",
+    );
+    final isEmpty = firstRow.values == null ||
+        firstRow.values!.isEmpty ||
+        firstRow.values!.first.every((c) => c.toString().trim().isEmpty);
+
+    if (isEmpty) {
+      debugPrint('Writing header row to "$tabName"');
+      await api.spreadsheets.values.update(
+        sheets.ValueRange(values: [_headerRow]),
+        _spreadsheetId!,
+        "'$tabName'!A1:AV1",
+        valueInputOption: 'RAW',
+      );
+
+      // Freeze the header so it stays visible as the log grows.
+      final sheetId = (await api.spreadsheets.get(_spreadsheetId!))
+          .sheets
+          ?.firstWhere((s) => s.properties?.title == _sheetName)
+          .properties
+          ?.sheetId;
+      if (sheetId != null) {
+        await api.spreadsheets.batchUpdate(
+          sheets.BatchUpdateSpreadsheetRequest(requests: [
+            sheets.Request(
+              updateSheetProperties: sheets.UpdateSheetPropertiesRequest(
+                properties: sheets.SheetProperties(
+                  sheetId: sheetId,
+                  gridProperties:
+                      sheets.GridProperties(frozenRowCount: 1),
+                ),
+                fields: 'gridProperties.frozenRowCount',
+              ),
+            ),
+          ]),
+          _spreadsheetId!,
+        );
+      }
     }
   }
 
+  /// Test hooks - keep the row and header widths verifiably in sync.
+  @visibleForTesting
+  static List<String> get headerRowForTest => _headerRow;
+  @visibleForTesting
+  static List<dynamic> rowForTest(FieldReport r) =>
+      SheetsService()._prepareRowData(r);
+
+  static const List<String> _headerRow = [
+    'Submitted At', // A
+    'Field Personnel Name', // B
+    'Phone', // C
+    'Zone', // D
+    'Visit Date', // E
+    'Visit Type', // F
+    'Hub / TSP', // G
+    'Community', // H
+    'Training Centre', // I
+    'Time Arrived', // J
+    'Time Departed', // K
+    'Male', // L
+    'Female', // M
+    'PWD', // N
+    'Staff', // O
+    'Trainers', // P
+    'Total Youth', // Q
+    'Formal Jobs', // R
+    'Internships', // S
+    'Cooperatives', // T
+    'Further Training', // U
+    'Total Activations', // V
+    'Enrolments (M)', // W
+    'Enrolments (F)', // X
+    'Course', // Y
+    'Employer', // Z
+    'Sector', // AA
+    'Hub Rating', // AB
+    'Quality Indicators', // AC
+    'Issues Flagged', // AD
+    'Facilities', // AE
+    'Challenges', // AF
+    'Partners Count', // AG
+    'Total Files', // AH
+    'Attendance Docs', // AI
+    'Financial Docs', // AJ
+    'MoUs', // AK
+    'Tracking Sheets', // AL
+    'Photos', // AM
+    'Videos', // AN
+    'Safeguarding Items', // AO
+    'Safeguarding Details', // AP
+    'Concern Raised', // AQ
+    'Concern Detail', // AR
+    'Final Notes', // AS
+    'Document Links', // AT
+    'Media Links', // AU
+    'Report ID', // AV
+  ];
+
+  // This method matches the exact column order of the existing spreadsheet
   List<dynamic> _prepareRowData(FieldReport report) {
     return [
       // A: Submitted At
@@ -269,11 +285,11 @@ class SheetsService {
       report.attendance.personsWithDisability,
       // O: Staff
       report.attendance.hubStaffOnDuty,
-      // P: Trainers
+      // P: Number of Trainers
       report.attendance.trainersPresent,
       // Q: Total Youth
       report.attendance.totalYouth,
-      // R: Formal Jobs
+      // R: Number of Formal Jobs
       report.employmentOutcome.placedInFormalEmployment,
       // S: Internships
       report.employmentOutcome.placedInInternships,
@@ -301,33 +317,52 @@ class SheetsService {
       report.issuesFlagged.join('; '),
       // AE: Facilities
       report.facilitiesAvailable.join('; '),
-      // AF: Activities
-      report.activitiesObserved.join('; '),
-      // AG: Challenges
+      // AF: Challenges
       report.challengesObserved ?? '',
-      // AH: Recommendations
-      report.recommendations ?? '',
-      // AI: Urgency
-      report.urgencyOfAction ?? '',
-      // AJ: Follow-up By
-      report.followUpBy ?? '',
-      // AK: Partners Count
+      // AG: Partners Count
       report.partnerCompanies.length,
-      // AL: Partner Notes
-      report.partnerEngagementNotes ?? '',
-      // AM: Safeguarding Items
+      // AH: Total Files
+      report.photoPaths.length + report.videoPaths.length + report.documentPaths.length,
+      // AI: Attendance Docs
+      report.attendanceSheetPaths.length,
+      // AJ: Financial Docs
+      report.financialDocPaths.length,
+      // AK: MoUs
+      report.mouPaths.length,
+      // AL: Tracking Sheets
+      report.trackingSheetPaths.length,
+      // AM: Photos
+      report.photoPaths.length,
+      // AN: Videos
+      report.videoPaths.length,
+      // AO: Safeguarding Items
       _getSafeguardingCount(report.safeguarding),
-      // AN: Safeguarding Details
+      // AP: Safeguarding Details
       _getSafeguardingDetails(report.safeguarding),
-      // AO: Concern Raised
+      // AQ: Concern Raised
       report.safeguarding.concernIdentified ? 'Yes' : 'No',
-      // AP: Concern Detail
+      // AR: Concern Detail
       report.safeguarding.concernDescription ?? '',
-      // AQ: Final Notes
+      // AS: Final Notes
       report.finalNotes ?? '',
-      // AR: Status
-      report.status,
+      // AT: Attendance / Financial / MoU / Tracking file links
+      _linkList([
+        ...report.attendanceSheetPaths,
+        ...report.financialDocPaths,
+        ...report.mouPaths,
+        ...report.trackingSheetPaths,
+      ]),
+      // AU: Photo & video links
+      _linkList([...report.photoPaths, ...report.videoPaths]),
+      // AV: Report ID (for cross-referencing Firestore)
+      report.id,
     ];
+  }
+
+  /// Newline-separated URLs, so the cell stays readable in Sheets.
+  String _linkList(List<String> paths) {
+    final urls = paths.where((p) => p.startsWith('http')).toList();
+    return urls.join('\n');
   }
 
   int _getSafeguardingCount(dynamic safeguarding) {

@@ -130,3 +130,7 @@
 
 # Keep webview classes
 -keep class io.flutter.plugins.webviewflutter.** { *; }
+-dontwarn com.google.android.play.core.**
+-keep class com.google.android.play.core.** { *; }
+-dontwarn io.flutter.embedding.**
+-keep class io.flutter.embedding.** { *; }

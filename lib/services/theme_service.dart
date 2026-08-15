@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:yiw_field_report/services/offline_service.dart';
 
 /// Holds the app-wide theme mode and persists it to the Hive `settings` box.
+///
+/// `AppTheme.darkTheme` already existed in this project but was unreachable
+/// because `app.dart` hardcoded `ThemeMode.light`.
 class ThemeService extends ChangeNotifier {
   static const String _settingKey = 'darkMode';
 
@@ -11,6 +14,7 @@ class ThemeService extends ChangeNotifier {
   ThemeService(this._offlineService);
 
   bool get isDarkMode => _isDarkMode;
+
   ThemeMode get themeMode => _isDarkMode ? ThemeMode.dark : ThemeMode.light;
 
   /// Reads the saved preference. Call once during startup.
@@ -30,6 +34,4 @@ class ThemeService extends ChangeNotifier {
     notifyListeners();
     await _offlineService.saveSetting(_settingKey, value);
   }
-
-  Future<void> toggle() => setDarkMode(!_isDarkMode);
 }

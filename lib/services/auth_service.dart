@@ -2,6 +2,17 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:yiw_field_report/models/user.dart' as app_user;
+import 'package:firebase_storage/firebase_storage.dart';
+import 'dart:io';
+
+/// Raised when a profile change is rejected, with a message safe to show the
+/// user directly.
+class ProfileUpdateException implements Exception {
+  final String message;
+  ProfileUpdateException(this.message);
+  @override
+  String toString() => message;
+}
 
 class AuthService extends ChangeNotifier {
   final FirebaseAuth _auth = FirebaseAuth.instance;
@@ -137,28 +148,101 @@ class AuthService extends ChangeNotifier {
     }
   }
 
+  /// Updates the signed-in user's profile.
+  ///
+  /// Everything except the display name can be changed freely. Changing
+  /// [fullName] is limited to once every [app_user.User.nameChangeCooldown]
+  /// (30 days) and throws [ProfileUpdateException] if attempted early.
+  ///
+  /// Note: timestamps are written as ISO strings rather than
+  /// FieldValue.serverTimestamp(). The original code used serverTimestamp(),
+  /// but User.fromJson calls DateTime.parse() on the value - a Firestore
+  /// Timestamp is not a String, so every reload after an update threw and the
+  /// error was swallowed by _loadUserData's try/catch.
   Future<void> updateProfile({
     String? fullName,
     String? phoneNumber,
     String? zone,
+    String? photoUrl,
   }) async {
+    if (_user == null) {
+      throw ProfileUpdateException('You are not signed in.');
+    }
+
     try {
-      if (_user == null) return;
-      
+      final now = DateTime.now();
       final updates = <String, dynamic>{
-        'updatedAt': FieldValue.serverTimestamp(),
+        'updatedAt': now.toIso8601String(),
       };
-      
-      if (fullName != null) updates['fullName'] = fullName;
-      if (phoneNumber != null) updates['phoneNumber'] = phoneNumber;
+
+      final trimmedName = fullName?.trim();
+      final isRealNameChange = trimmedName != null &&
+          trimmedName.isNotEmpty &&
+          trimmedName != _appUser?.fullName;
+
+      if (isRealNameChange) {
+        final current = _appUser;
+        if (current != null && !current.canChangeName) {
+          throw ProfileUpdateException(
+            'You can change your name again in '
+            '${current.daysUntilNameChange} day(s).',
+          );
+        }
+        updates['fullName'] = trimmedName;
+        updates['nameLastChangedAt'] = now.toIso8601String();
+      }
+
+      if (phoneNumber != null) updates['phoneNumber'] = phoneNumber.trim();
       if (zone != null) updates['zone'] = zone;
-      
+      if (photoUrl != null) updates['photoUrl'] = photoUrl;
+
+      // Nothing but the timestamp - no point writing.
+      if (updates.length == 1) return;
+
       await _firestore.collection('users').doc(_user!.uid).update(updates);
-      
-      // Reload user data
+
+      if (isRealNameChange) {
+        // Keep the Firebase Auth display name in step with Firestore.
+        try {
+          await _user!.updateDisplayName(trimmedName);
+        } catch (e) {
+          debugPrint('Could not update auth display name: $e');
+        }
+      }
+
       await _loadUserData(_user!.uid);
-    } catch (e) {
+      notifyListeners();
+    } on ProfileUpdateException {
       rethrow;
+    } catch (e) {
+      throw ProfileUpdateException('Could not save your profile: $e');
+    }
+  }
+
+  /// Uploads a profile picture and returns its download URL.
+  ///
+  /// Stored at `profile_photos/<uid>.jpg` so each user has exactly one,
+  /// overwritten on change rather than accumulating.
+  Future<String> uploadProfilePhoto(String localPath) async {
+    if (_user == null) {
+      throw ProfileUpdateException('You are not signed in.');
+    }
+    final file = File(localPath);
+    if (!await file.exists()) {
+      throw ProfileUpdateException('That image could not be found.');
+    }
+    try {
+      final ref =
+          FirebaseStorage.instance.ref().child('profile_photos/${_user!.uid}.jpg');
+      final task = await ref.putFile(
+        file,
+        SettableMetadata(contentType: 'image/jpeg'),
+      );
+      return await task.ref.getDownloadURL();
+    } catch (e) {
+      throw ProfileUpdateException(
+        'Photo upload failed. Cloud storage may not be set up yet. ($e)',
+      );
     }
   }
 

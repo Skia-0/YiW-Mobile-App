@@ -2,19 +2,20 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:hive/hive.dart';
 
-/// Stores a raw snapshot of the in-progress report form.
+/// Persists an in-progress report form so field officers never lose work.
 ///
-/// Deliberately does NOT use [FieldReport]: that model's `toJson()` is lossy
-/// (it drops ratings, quality indicators, challenges, notes, etc.), so a draft
-/// round-tripped through it would silently lose most of the user's typing.
-/// Here we persist the flat form state exactly as entered.
+/// Deliberately does NOT reuse [FieldReport]: that model's `toJson()` is lossy
+/// (it drops overallRating, qualityIndicators, issuesFlagged, challenges,
+/// recommendations, finalNotes and more), so a draft round-tripped through it
+/// would silently discard most of what the user typed. This stores the flat
+/// form state exactly as entered.
 class DraftService {
   static const String _boxName = 'drafts';
   static const String _activeDraftKey = 'active_form_draft';
 
   Box<String> get _box => Hive.box<String>(_boxName);
 
-  /// True when there is an unfinished form waiting to be resumed.
+  /// True when an unfinished form is waiting to be resumed.
   bool get hasDraft => _box.containsKey(_activeDraftKey);
 
   Future<void> save(Map<String, dynamic> data) async {
@@ -40,10 +41,9 @@ class DraftService {
     }
   }
 
-  /// When the draft was last written, or null if there is no draft.
+  /// When the draft was last written, or null if there is none.
   DateTime? get savedAt {
-    final data = load();
-    final raw = data?['savedAt'];
+    final raw = load()?['savedAt'];
     if (raw is! String) return null;
     return DateTime.tryParse(raw);
   }

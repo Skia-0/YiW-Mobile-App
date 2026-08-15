@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:yiw_field_report/services/auth_service.dart';
 import 'package:yiw_field_report/services/offline_service.dart';
+import 'package:yiw_field_report/services/theme_service.dart';
 import 'package:yiw_field_report/theme/colors.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -12,7 +13,6 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  bool _darkMode = false;
   bool _notificationsEnabled = true;
   bool _offlineMode = true;
 
@@ -24,11 +24,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _loadSettings() async {
     final offlineService = Provider.of<OfflineService>(context, listen: false);
-    final darkMode = await offlineService.getSetting('darkMode');
     final notifications = await offlineService.getSetting('notifications');
     final offline = await offlineService.getSetting('offlineMode');
     setState(() {
-      _darkMode = darkMode ?? false;
       _notificationsEnabled = notifications ?? true;
       _offlineMode = offline ?? true;
     });
@@ -59,10 +57,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ListTile(
                   leading: CircleAvatar(
                     backgroundColor: AppColors.primary,
-                    child: Text(
-                      user?.fullName?.substring(0, 1).toUpperCase() ?? 'U',
-                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                    ),
+                    backgroundImage: (user?.photoUrl != null &&
+                            user!.photoUrl!.isNotEmpty)
+                        ? NetworkImage(user.photoUrl!)
+                        : null,
+                    child: (user?.photoUrl == null || user!.photoUrl!.isEmpty)
+                        ? Text(
+                            user?.fullName.substring(0, 1).toUpperCase() ?? 'U',
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold),
+                          )
+                        : null,
                   ),
                   title: Text(user?.fullName ?? 'User', style: const TextStyle(fontWeight: FontWeight.w600)),
                   subtitle: Column(
@@ -73,6 +79,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       Text('Role: ${user?.role ?? 'Field Officer'}'),
                     ],
                   ),
+                  trailing: const Icon(Icons.edit),
+                  onTap: () => Navigator.pushNamed(context, '/edit-profile'),
                 ),
               ],
             ),
@@ -90,18 +98,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
               children: [
                 const Text('App Settings', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
                 const SizedBox(height: 16),
-                SwitchListTile(
-                  title: const Text('Dark Mode'),
-                  subtitle: const Text('Switch between light and dark theme'),
-                  value: _darkMode,
-                  onChanged: (value) {
-                    setState(() { _darkMode = value; });
-                    _saveSetting('darkMode', value);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Dark mode ${value ? "enabled" : "disabled"}')),
-                    );
-                  },
-                  secondary: const Icon(Icons.dark_mode_outlined),
+                Consumer<ThemeService>(
+                  builder: (context, themeService, _) => SwitchListTile(
+                    title: const Text('Dark Mode'),
+                    subtitle: const Text('Switch between light and dark theme'),
+                    value: themeService.isDarkMode,
+                    onChanged: (value) => themeService.setDarkMode(value),
+                    secondary: Icon(themeService.isDarkMode
+                        ? Icons.dark_mode
+                        : Icons.dark_mode_outlined),
+                  ),
                 ),
                 const Divider(),
                 SwitchListTile(

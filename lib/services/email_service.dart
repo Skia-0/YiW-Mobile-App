@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:http/http.dart' as http;
@@ -30,16 +31,189 @@ class EmailService {
     required String toEmail,
     required FieldReport report,
     required String recipientName,
+    /// Optional alternative source for the files themselves.
+    ///
+    /// Callers pass the pre-upload report (local device paths) so attachments
+    /// still work when Firebase Storage is unavailable, while [report] keeps
+    /// the Storage URLs used for the links in the body.
+    FieldReport? attachmentSource,
   }) async {
     try {
       await _loadConfig();
       final subject = 'YiW Field Report - ${report.focalPerson.visitDate.toString().split(' ')[0]} - ${report.trainingCentre.centreName}';
-      final htmlContent = _buildEmailHtml(report, recipientName);
-      await _sendEmailViaSendGrid(toEmail: toEmail, subject: subject, htmlContent: htmlContent);
-      debugPrint('Email sent to $toEmail');
+
+      var attachments = await buildAttachments(attachmentSource ?? report);
+      // Fall back to whatever the report itself carries.
+      if (attachments.isEmpty && attachmentSource != null) {
+        attachments = await buildAttachments(report);
+      }
+      final htmlContent = _buildEmailHtml(report, recipientName) +
+          _buildAttachmentSection(
+              _hasAnyFile(report) ? report : (attachmentSource ?? report),
+              attachments.length);
+
+      await _sendEmailViaSendGrid(
+        toEmail: toEmail,
+        subject: subject,
+        htmlContent: htmlContent,
+        attachments: attachments,
+      );
+      debugPrint('Email sent to $toEmail with ${attachments.length} attachment(s)');
     } catch (e) {
       debugPrint('Error sending email to $toEmail: $e');
     }
+  }
+
+  bool _hasAnyFile(FieldReport r) =>
+      r.attendanceSheetPaths.isNotEmpty ||
+      r.financialDocPaths.isNotEmpty ||
+      r.mouPaths.isNotEmpty ||
+      r.trackingSheetPaths.isNotEmpty ||
+      r.photoPaths.isNotEmpty ||
+      r.videoPaths.isNotEmpty;
+
+  /// SendGrid caps a single message at ~30 MB including base64 overhead.
+  /// Stay well under it; anything larger is linked instead of attached.
+  static const int _maxTotalAttachmentBytes = 20 * 1024 * 1024;
+  static const int _maxSingleFileBytes = 8 * 1024 * 1024;
+
+  /// Collects every file on the report and base64-encodes it for SendGrid.
+  ///
+  /// Handles both local device paths (offline submit) and Firebase Storage
+  /// download URLs (files already uploaded by ReportService).
+  Future<List<Map<String, String>>> buildAttachments(FieldReport report) async {
+    final entries = <MapEntry<String, String>>[
+      ...report.attendanceSheetPaths.map((p) => MapEntry('attendance', p)),
+      ...report.financialDocPaths.map((p) => MapEntry('financial', p)),
+      ...report.mouPaths.map((p) => MapEntry('mou', p)),
+      ...report.trackingSheetPaths.map((p) => MapEntry('tracking', p)),
+      ...report.photoPaths.map((p) => MapEntry('photo', p)),
+      ...report.videoPaths.map((p) => MapEntry('video', p)),
+      ...report.documentPaths.map((p) => MapEntry('document', p)),
+    ];
+
+    final result = <Map<String, String>>[];
+    int totalBytes = 0;
+
+    for (final entry in entries) {
+      try {
+        final prefix = entry.key;
+        final source = entry.value;
+        if (source.isEmpty) continue;
+
+        List<int>? bytes;
+        String name;
+
+        if (source.startsWith('http')) {
+          final uri = Uri.parse(source);
+          final resp = await http.get(uri);
+          if (resp.statusCode != 200) {
+            debugPrint('Attachment fetch failed (${resp.statusCode}): $source');
+            continue;
+          }
+          bytes = resp.bodyBytes;
+          // Firebase URLs carry the object path; strip query + folder noise.
+          name = Uri.decodeComponent(uri.pathSegments.last).split('/').last;
+        } else {
+          final file = File(source);
+          if (!await file.exists()) {
+            debugPrint('Attachment missing on device: $source');
+            continue;
+          }
+          bytes = await file.readAsBytes();
+          name = source.split(Platform.pathSeparator).last.split('/').last;
+        }
+
+        if (bytes.length > _maxSingleFileBytes) {
+          debugPrint('Skipping oversized attachment ($name, ${bytes.length} bytes)');
+          continue;
+        }
+        if (totalBytes + bytes.length > _maxTotalAttachmentBytes) {
+          debugPrint('Attachment size budget reached; remaining files linked only');
+          break;
+        }
+        totalBytes += bytes.length;
+
+        result.add({
+          'content': base64Encode(bytes),
+          'filename': '${prefix}_$name',
+          'type': _mimeType(name),
+          'disposition': 'attachment',
+        });
+      } catch (e) {
+        debugPrint('Error attaching ${entry.value}: $e');
+      }
+    }
+    return result;
+  }
+
+  String _mimeType(String fileName) {
+    final n = fileName.toLowerCase();
+    if (n.endsWith('.png')) return 'image/png';
+    if (n.endsWith('.jpg') || n.endsWith('.jpeg')) return 'image/jpeg';
+    if (n.endsWith('.webp')) return 'image/webp';
+    if (n.endsWith('.gif')) return 'image/gif';
+    if (n.endsWith('.pdf')) return 'application/pdf';
+    if (n.endsWith('.mp4')) return 'video/mp4';
+    if (n.endsWith('.mov')) return 'video/quicktime';
+    if (n.endsWith('.csv')) return 'text/csv';
+    if (n.endsWith('.xls')) return 'application/vnd.ms-excel';
+    if (n.endsWith('.xlsx')) {
+      return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    }
+    if (n.endsWith('.doc')) return 'application/msword';
+    if (n.endsWith('.docx')) {
+      return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    }
+    return 'application/octet-stream';
+  }
+
+  /// Lists the files in the email body, with clickable Storage links so a
+  /// recipient can still reach anything too large to attach.
+  String _buildAttachmentSection(FieldReport report, int attachedCount) {
+    final groups = <String, List<String>>{
+      'Attendance sheets': report.attendanceSheetPaths,
+      'Financial documents': report.financialDocPaths,
+      'MoUs & agreements': report.mouPaths,
+      'Tracking sheets': report.trackingSheetPaths,
+      'Photos': report.photoPaths,
+      'Videos': report.videoPaths,
+    }..removeWhere((_, v) => v.isEmpty);
+
+    if (groups.isEmpty) {
+      return '''
+      <div style="padding:16px;background:#fafafa;border-top:1px solid #e0e0e0;">
+        <p style="margin:0;font-size:13px;color:#888888;">No files were attached to this report.</p>
+      </div>
+      ''';
+    }
+
+    final buffer = StringBuffer()
+      ..write('''
+      <div style="padding:20px;background:#fafafa;border-top:1px solid #e0e0e0;">
+        <h3 style="margin:0 0 12px 0;font-size:16px;color:#2d2d2d;">
+          Attachments ($attachedCount file(s) attached to this email)
+        </h3>
+      ''');
+
+    groups.forEach((label, paths) {
+      buffer.write(
+          '<p style="margin:12px 0 4px 0;font-size:13px;font-weight:600;color:#2E7D32;">$label (${paths.length})</p><ul style="margin:0;padding-left:18px;">');
+      for (final p in paths) {
+        if (p.startsWith('http')) {
+          final name = Uri.decodeComponent(Uri.parse(p).pathSegments.last).split('/').last;
+          buffer.write(
+              '<li style="font-size:12px;margin-bottom:3px;"><a href="$p" style="color:#1565C0;">$name</a></li>');
+        } else {
+          final name = p.split(Platform.pathSeparator).last.split('/').last;
+          buffer.write('<li style="font-size:12px;margin-bottom:3px;">$name</li>');
+        }
+      }
+      buffer.write('</ul>');
+    });
+
+    buffer.write('</div>');
+    return buffer.toString();
   }
 
   Future<void> sendConfirmationEmail({
@@ -61,6 +235,7 @@ class EmailService {
     required String toEmail,
     required String subject,
     required String htmlContent,
+    List<Map<String, String>> attachments = const [],
   }) async {
     try {
       final url = Uri.parse('https://api.sendgrid.com/v3/mail/send');
@@ -86,6 +261,7 @@ class EmailService {
             'value': htmlContent,
           }
         ],
+        if (attachments.isNotEmpty) 'attachments': attachments,
       };
 
       final response = await http.post(

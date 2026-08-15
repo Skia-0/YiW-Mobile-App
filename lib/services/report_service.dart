@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
@@ -52,8 +53,35 @@ class ReportService extends ChangeNotifier {
         status: 'submitted',
       );
       
-      // Upload media files
+      _lastSubmitWarnings.clear();
+      _uploadErrors.clear();
+
+      // Upload media files (Firebase Storage)
       final uploadedReport = await _uploadMediaFiles(updatedReport);
+
+      final expectedFiles = updatedReport.photoPaths.length +
+          updatedReport.videoPaths.length +
+          updatedReport.attendanceSheetPaths.length +
+          updatedReport.financialDocPaths.length +
+          updatedReport.mouPaths.length +
+          updatedReport.trackingSheetPaths.length;
+      final actualFiles = uploadedReport.photoPaths.length +
+          uploadedReport.videoPaths.length +
+          uploadedReport.attendanceSheetPaths.length +
+          uploadedReport.financialDocPaths.length +
+          uploadedReport.mouPaths.length +
+          uploadedReport.trackingSheetPaths.length;
+      if (actualFiles < expectedFiles) {
+        final failed = expectedFiles - actualFiles;
+        _lastSubmitWarnings.add(
+            '$failed of $expectedFiles file(s) did not upload to cloud storage');
+        // Surface the actual reason(s), de-duplicated.
+        for (final reason in _uploadErrors.toSet().take(3)) {
+          _lastSubmitWarnings.add('   • $reason');
+        }
+        _lastSubmitWarnings.add(
+            'Files were still attached to the email, so recipients have them.');
+      }
       
       // Save to Firestore
       await _firestore.collection('reports').doc(reportId).set(uploadedReport.toJson());
@@ -61,8 +89,17 @@ class ReportService extends ChangeNotifier {
       // Add to local list
       _reports.insert(0, uploadedReport);
       
-      // Send emails
-      await _sendEmails(uploadedReport);
+      // Send emails.
+      //
+      // Attach from `updatedReport` (the LOCAL device paths), not
+      // `uploadedReport` (Storage URLs). If Storage is unavailable the URL list
+      // is empty and recipients would get zero attachments - the files are
+      // sitting on the phone either way, so email them directly.
+      // The body still shows Storage links when uploads did succeed.
+      await _sendEmails(
+        uploadedReport,
+        attachmentSource: updatedReport,
+      );
       
       // Update Google Sheet
       await _updateGoogleSheet(uploadedReport);
@@ -96,43 +133,43 @@ class ReportService extends ChangeNotifier {
       // Upload photos
       for (final path in report.photoPaths) {
         final url = await _uploadFile(path, 'photos/${report.id}');
-        photoUrls.add(url);
+        if (url.isNotEmpty) photoUrls.add(url);
       }
       
       // Upload videos
       for (final path in report.videoPaths) {
         final url = await _uploadFile(path, 'videos/${report.id}');
-        videoUrls.add(url);
+        if (url.isNotEmpty) videoUrls.add(url);
       }
       
       // Upload documents
       for (final path in report.documentPaths) {
         final url = await _uploadFile(path, 'documents/${report.id}');
-        documentUrls.add(url);
+        if (url.isNotEmpty) documentUrls.add(url);
       }
       
       // Upload attendance sheets
       for (final path in report.attendanceSheetPaths) {
         final url = await _uploadFile(path, 'attendance/${report.id}');
-        attendanceSheetUrls.add(url);
+        if (url.isNotEmpty) attendanceSheetUrls.add(url);
       }
       
       // Upload financial documents
       for (final path in report.financialDocPaths) {
         final url = await _uploadFile(path, 'financial/${report.id}');
-        financialDocUrls.add(url);
+        if (url.isNotEmpty) financialDocUrls.add(url);
       }
       
       // Upload MoUs
       for (final path in report.mouPaths) {
         final url = await _uploadFile(path, 'mous/${report.id}');
-        mouUrls.add(url);
+        if (url.isNotEmpty) mouUrls.add(url);
       }
       
       // Upload tracking sheets
       for (final path in report.trackingSheetPaths) {
         final url = await _uploadFile(path, 'tracking/${report.id}');
-        trackingSheetUrls.add(url);
+        if (url.isNotEmpty) trackingSheetUrls.add(url);
       }
       
       return report.copyWith(
@@ -150,28 +187,69 @@ class ReportService extends ChangeNotifier {
     }
   }
 
+  /// Uploads a local file to Firebase Storage and returns its download URL.
+  ///
+  /// Previously this returned a fabricated URL without uploading anything.
+  /// Human-readable reasons the last submit partially failed.
+  final List<String> _uploadErrors = [];
+
   Future<String> _uploadFile(String filePath, String folder) async {
     try {
-      final fileName = filePath.split('/').last;
+      // Already a remote URL (e.g. re-submitting an existing report).
+      if (filePath.startsWith('http')) return filePath;
+
+      final file = File(filePath);
+      if (!await file.exists()) {
+        debugPrint('Upload skipped, file missing: $filePath');
+        return '';
+      }
+
+      // Prefix with a timestamp so two files with the same name can coexist.
+      final rawName = filePath.split(Platform.pathSeparator).last.split('/').last;
+      final fileName = '${DateTime.now().millisecondsSinceEpoch}_$rawName';
+
       final ref = _storage.ref().child('$folder/$fileName');
-      
-      // For now, we'll assume the file is already on the device
-      // In a real app, you'd read the file and upload it
-      // For this example, we'll just return a placeholder URL
-      return 'https://storage.googleapis.com/yiw-reports/$folder/$fileName';
+      final task = await ref.putFile(file);
+      return await task.ref.getDownloadURL();
     } catch (e) {
-      debugPrint('Error uploading file: $e');
-      rethrow;
+      debugPrint('Error uploading file ($filePath): $e');
+      final name = filePath.split(Platform.pathSeparator).last.split('/').last;
+      _uploadErrors.add('$name: ${_friendlyStorageError(e)}');
+      // Never let one bad attachment sink the whole report.
+      return '';
     }
   }
 
-  Future<void> _sendEmails(FieldReport report) async {
+  /// Turns Firebase Storage jargon into something a field officer can act on.
+  String _friendlyStorageError(Object e) {
+    final msg = e.toString();
+    if (msg.contains('object-not-found') || msg.contains('404')) {
+      return 'Cloud storage not set up (bucket missing)';
+    }
+    if (msg.contains('unauthorized') || msg.contains('permission')) {
+      return 'No permission to upload (storage rules)';
+    }
+    if (msg.contains('canceled') || msg.contains('cancelled')) {
+      return 'Upload cancelled';
+    }
+    if (msg.contains('retry-limit') || msg.contains('timeout')) {
+      return 'Network too slow / timed out';
+    }
+    if (msg.contains('quota')) return 'Storage quota exceeded';
+    return msg.length > 90 ? '${msg.substring(0, 90)}...' : msg;
+  }
+
+  Future<void> _sendEmails(
+    FieldReport report, {
+    FieldReport? attachmentSource,
+  }) async {
     try {
       // Send to CEO
       await _emailService.sendReportEmail(
         toEmail: 'execdir@seghana.net',
         report: report,
         recipientName: 'Executive Director',
+        attachmentSource: attachmentSource,
       );
       
       // Send to YiW team
@@ -179,6 +257,7 @@ class ReportService extends ChangeNotifier {
         toEmail: 'yiw@seghana.net',
         report: report,
         recipientName: 'YiW Team',
+        attachmentSource: attachmentSource,
       );
       
       // Send confirmation to sender
@@ -190,14 +269,21 @@ class ReportService extends ChangeNotifier {
       }
     } catch (e) {
       debugPrint('Error sending emails: $e');
+      _lastSubmitWarnings.add('Email delivery failed: $e');
     }
   }
+
+  /// Set after each submit so the UI can report partial failures honestly
+  /// instead of always showing "Success".
+  final List<String> _lastSubmitWarnings = [];
+  List<String> get lastSubmitWarnings => List.unmodifiable(_lastSubmitWarnings);
 
   Future<void> _updateGoogleSheet(FieldReport report) async {
     try {
       await _sheetsService.addReportToSheet(report);
     } catch (e) {
       debugPrint('Error updating Google Sheet: $e');
+      _lastSubmitWarnings.add('Google Sheet was not updated: $e');
       // Don't rethrow - sheet update failure shouldn't block report submission
     }
   }

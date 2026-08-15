@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:provider/provider.dart';
 import 'package:yiw_field_report/models/field_report.dart';
 import 'package:yiw_field_report/models/focal_person.dart';
@@ -8,9 +9,10 @@ import 'package:yiw_field_report/models/employment_outcome.dart';
 import 'package:yiw_field_report/models/safeguarding.dart';
 import 'package:yiw_field_report/services/report_service.dart';
 import 'package:yiw_field_report/services/auth_service.dart';
-import 'package:yiw_field_report/services/draft_service.dart';
 import 'package:yiw_field_report/theme/colors.dart';
 import 'package:yiw_field_report/config/app_config.dart';
+import 'package:yiw_field_report/services/draft_service.dart';
+import 'package:yiw_field_report/widgets/attachment_picker.dart';
 import 'dart:async';
 
 class ReportFormScreen extends StatefulWidget {
@@ -30,7 +32,7 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
   // Draft auto-save
   Timer? _autoSaveTimer;
   DateTime? _lastSavedAt;
-  bool _draftRestored = false;
+  bool _draftPromptShown = false;
   
   // Form data
   String _selectedZone = '';
@@ -93,6 +95,20 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
   
   final _finalNotesController = TextEditingController();
   
+  // Documents (Docs step)
+  List<String> _attendanceSheets = [];
+  List<String> _financialDocs = [];
+  List<String> _mous = [];
+  List<String> _trackingSheets = [];
+  final _documentNotesController = TextEditingController();
+
+  // Media step
+  List<String> _photos = [];
+  List<String> _videos = [];
+  final _photoCaptionController = TextEditingController();
+  final _videoDescriptionController = TextEditingController();
+  final _mediaContextController = TextEditingController();
+
   // Time
   TimeOfDay? _timeArrived;
   TimeOfDay? _timeDeparted;
@@ -104,7 +120,7 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
     _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(CurvedAnimation(parent: _animationController, curve: Curves.easeInOut));
     _animationController.forward();
 
-    // Offer to restore a previous unfinished form, then start auto-saving.
+    // Offer to restore an unfinished form, then checkpoint every 30s.
     WidgetsBinding.instance.addPostFrameCallback((_) => _maybeRestoreDraft());
     _autoSaveTimer = Timer.periodic(
       const Duration(seconds: 30),
@@ -135,6 +151,10 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
     _concernDescriptionController.dispose();
     _actionTakenController.dispose();
     _reportedToController.dispose();
+    _documentNotesController.dispose();
+    _photoCaptionController.dispose();
+    _videoDescriptionController.dispose();
+    _mediaContextController.dispose();
     _finalNotesController.dispose();
     super.dispose();
   }
@@ -148,14 +168,13 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
       canPop: false,
       onPopInvokedWithResult: (didPop, result) async {
         if (didPop) return;
-        final shouldPop = await _onWillPop();
-        if (shouldPop && mounted) Navigator.of(context).pop();
+        final leave = await _confirmLeave();
+        if (leave && mounted) Navigator.of(context).pop();
       },
       child: Scaffold(
       backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       appBar: AppBar(
         title: Column(
-          crossAxisAlignment: CrossAxisAlignment.center,
           mainAxisSize: MainAxisSize.min,
           children: [
             const Text('New Field Report'),
@@ -163,7 +182,9 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
               Text(
                 'Draft saved ${_friendlyTime(_lastSavedAt!)}',
                 style: const TextStyle(
-                    fontSize: 11, color: Colors.white70, fontWeight: FontWeight.w400),
+                    fontSize: 11,
+                    color: Colors.white70,
+                    fontWeight: FontWeight.w400),
               ),
           ],
         ),
@@ -183,7 +204,7 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
             padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
             color: AppColors.primary,
             child: Row(
-              children: List.generate(8, (index) {
+              children: List.generate(10, (index) {
                 final isActive = index <= _currentStep;
                 final isCurrent = index == _currentStep;
                 return Expanded(
@@ -210,7 +231,7 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
                 const SizedBox(width: 8),
                 Text(_getStepTitle(_currentStep), style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AppColors.primary)),
                 const Spacer(),
-                Text('Step ${_currentStep + 1} of 8', style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+                Text('Step ${_currentStep + 1} of 10', style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
               ],
             ),
           ),
@@ -252,11 +273,11 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
                   flex: 2,
                   child: ElevatedButton.icon(
                     onPressed: _isSubmitting ? null : _nextStep,
-                    icon: _isSubmitting ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : Icon(_currentStep == 7 ? Icons.send : Icons.arrow_forward),
-                    label: Text(_currentStep == 7 ? 'Submit Report' : 'Continue'),
+                    icon: _isSubmitting ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : Icon(_currentStep == 9 ? Icons.send : Icons.arrow_forward),
+                    label: Text(_currentStep == 9 ? 'Submit Report' : 'Continue'),
                     style: ElevatedButton.styleFrom(
                       padding: const EdgeInsets.symmetric(vertical: 16),
-                      backgroundColor: _currentStep == 7 ? AppColors.success : AppColors.primary,
+                      backgroundColor: _currentStep == 9 ? AppColors.success : AppColors.primary,
                     ),
                   ),
                 ),
@@ -277,8 +298,10 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
       case 3: return Icons.work;
       case 4: return Icons.star;
       case 5: return Icons.handshake;
-      case 6: return Icons.security;
-      case 7: return Icons.check_circle;
+      case 6: return Icons.folder_copy_outlined;
+      case 7: return Icons.perm_media_outlined;
+      case 8: return Icons.security;
+      case 9: return Icons.check_circle;
       default: return Icons.circle;
     }
   }
@@ -291,8 +314,10 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
       case 3: return 'Employment Outcomes';
       case 4: return 'Training Quality';
       case 5: return 'Partner Engagement';
-      case 6: return 'Safeguarding';
-      case 7: return 'Review & Submit';
+      case 6: return 'Document Uploads';
+      case 7: return 'Photos & Videos';
+      case 8: return 'Safeguarding';
+      case 9: return 'Review & Submit';
       default: return '';
     }
   }
@@ -305,8 +330,10 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
       case 3: return _buildEmploymentSection();
       case 4: return _buildQualitySection();
       case 5: return _buildPartnerSection();
-      case 6: return _buildSafeguardingSection();
-      case 7: return _buildReviewSection();
+      case 6: return _buildDocumentsSection();
+      case 7: return _buildMediaSection();
+      case 8: return _buildSafeguardingSection();
+      case 9: return _buildReviewSection();
       default: return Container();
     }
   }
@@ -633,11 +660,11 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
                   duration: const Duration(milliseconds: 200),
                   width: 56, height: 56,
                   decoration: BoxDecoration(
-                    color: _rating == i + 1 ? AppColors.primary : AppColors.inputFill,
+                    color: _rating == i + 1 ? AppColors.primary : Theme.of(context).inputDecorationTheme.fillColor,
                     borderRadius: BorderRadius.circular(12),
                     boxShadow: _rating == i + 1 ? [BoxShadow(color: AppColors.primary.withOpacity(0.3), blurRadius: 8)] : [],
                   ),
-                  child: Center(child: Text('${i + 1}', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: _rating == i + 1 ? Colors.white : AppColors.textPrimary))),
+                  child: Center(child: Text('${i + 1}', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: _rating == i + 1 ? Colors.white : Theme.of(context).textTheme.bodyLarge?.color))),
                 ),
               )),
             ),
@@ -748,6 +775,175 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
     );
   }
 
+  /// Docs step - mirrors the "Document Uploads" section of the YiW web form.
+  Widget _buildDocumentsSection() {
+    return Column(
+      children: [
+        Container(
+          margin: const EdgeInsets.only(bottom: 12),
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: AppColors.info.withOpacity(0.1),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: AppColors.info.withOpacity(0.3)),
+          ),
+          child: const Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(Icons.info_outline, size: 18, color: AppColors.info),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Roles 3 & 5: Scan and send attendance sheets, financial '
+                  'documents and MoUs. Upload monthly tracking sheets.',
+                  style: TextStyle(fontSize: 12),
+                ),
+              ),
+            ],
+          ),
+        ),
+        _buildSectionCard(
+          title: 'Document Uploads',
+          icon: Icons.folder_copy_outlined,
+          children: [
+            const Padding(
+              padding: EdgeInsets.only(bottom: 12),
+              child: Text(
+                'Use the camera to scan, or browse to attach files. '
+                'Images are compressed automatically.',
+                style: TextStyle(
+                    fontSize: 12, color: AppColors.textSecondary),
+              ),
+            ),
+            AttachmentPicker(
+              label: 'Attendance sheets',
+              icon: Icons.fact_check_outlined,
+              browseHint: 'PDF or Image',
+              paths: _attendanceSheets,
+              onChanged: (v) => setState(() { _attendanceSheets = v; }),
+            ),
+            const Divider(),
+            AttachmentPicker(
+              label: 'Financial documents',
+              icon: Icons.receipt_long_outlined,
+              browseHint: 'Receipts / Invoices',
+              paths: _financialDocs,
+              onChanged: (v) => setState(() { _financialDocs = v; }),
+            ),
+            const Divider(),
+            AttachmentPicker(
+              label: 'MoUs & signed agreements',
+              icon: Icons.handshake_outlined,
+              browseHint: 'Scanned copies',
+              paths: _mous,
+              onChanged: (v) => setState(() { _mous = v; }),
+            ),
+            const Divider(),
+            AttachmentPicker(
+              label: 'YiW tracking sheets (monthly)',
+              icon: Icons.table_chart_outlined,
+              browseHint: 'Excel / CSV / PDF',
+              paths: _trackingSheets,
+              onChanged: (v) => setState(() { _trackingSheets = v; }),
+            ),
+            const SizedBox(height: 8),
+            TextFormField(
+              controller: _documentNotesController,
+              maxLines: 3,
+              decoration: const InputDecoration(
+                labelText: 'Document notes',
+                hintText: 'Anything the office should know about these files',
+                alignLabelWithHint: true,
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  /// Media step - photos and videos captured during the visit.
+  Widget _buildMediaSection() {
+    return Column(
+      children: [
+        Container(
+          margin: const EdgeInsets.only(bottom: 12),
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: AppColors.accent.withOpacity(0.1),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: AppColors.accent.withOpacity(0.3)),
+          ),
+          child: const Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(Icons.photo_camera_outlined,
+                  size: 18, color: AppColors.accent),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Capture training in progress, centre conditions, youth '
+                  'activities and partner meetings.',
+                  style: TextStyle(fontSize: 12),
+                ),
+              ),
+            ],
+          ),
+        ),
+        _buildSectionCard(
+          title: 'Photos',
+          icon: Icons.photo_library_outlined,
+          children: [
+            AttachmentPicker(
+              label: 'Training, activities, hub conditions, meetings',
+              icon: Icons.image_outlined,
+              browseHint: 'Choose from device',
+              allowDocuments: false,
+              paths: _photos,
+              onChanged: (v) => setState(() { _photos = v; }),
+            ),
+            TextFormField(
+              controller: _photoCaptionController,
+              decoration: const InputDecoration(
+                labelText: 'Photo caption',
+              ),
+            ),
+          ],
+        ),
+        _buildSectionCard(
+          title: 'Videos',
+          icon: Icons.videocam_outlined,
+          children: [
+            AttachmentPicker(
+              label: 'Testimonials, training delivery, activities',
+              icon: Icons.movie_outlined,
+              browseHint: 'Choose from device',
+              isVideo: true,
+              allowDocuments: false,
+              paths: _videos,
+              onChanged: (v) => setState(() { _videos = v; }),
+            ),
+            TextFormField(
+              controller: _videoDescriptionController,
+              decoration: const InputDecoration(
+                labelText: 'Video description',
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: _mediaContextController,
+              maxLines: 3,
+              decoration: const InputDecoration(
+                labelText: 'Media context / overall description',
+                alignLabelWithHint: true,
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
   Widget _buildSafeguardingSection() {
     return Column(
       children: [
@@ -798,7 +994,7 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
         border: Border.all(color: value ? AppColors.success.withOpacity(0.3) : Colors.grey.withOpacity(0.2)),
       ),
       child: CheckboxListTile(
-        title: Text(title, style: TextStyle(fontSize: 13, color: value ? AppColors.success : AppColors.textPrimary)),
+        title: Text(title, style: TextStyle(fontSize: 13, color: value ? AppColors.success : Theme.of(context).textTheme.bodyLarge?.color)),
         value: value,
         onChanged: (v) => onChanged(v!),
         activeColor: AppColors.success,
@@ -806,6 +1002,14 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
       ),
     );
   }
+
+  int get _totalAttachments =>
+      _attendanceSheets.length +
+      _financialDocs.length +
+      _mous.length +
+      _trackingSheets.length +
+      _photos.length +
+      _videos.length;
 
   Widget _buildReviewSection() {
     return Column(
@@ -838,6 +1042,18 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
           'Issues: ${_selectedIssues.length} flagged',
           'Facilities: ${_selectedFacilities.length} available',
         ], Icons.star),
+        _buildReviewCard('Documents', [
+          'Attendance sheets: ${_attendanceSheets.length}',
+          'Financial documents: ${_financialDocs.length}',
+          'MoUs: ${_mous.length}',
+          'Tracking sheets: ${_trackingSheets.length}',
+        ], Icons.folder_copy_outlined),
+        _buildReviewCard('Media', [
+          'Photos: ${_photos.length}',
+          'Videos: ${_videos.length}',
+          if (_totalAttachments > 0)
+            '$_totalAttachments file(s) will be uploaded on submit',
+        ], Icons.perm_media_outlined),
         _buildReviewCard('Safeguarding', [
           'Checks: ${_getSafeguardingCount()}/8',
           'Concern: ${_concernIdentified ? 'Yes' : 'No'}',
@@ -896,10 +1112,11 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
   }
 
   void _nextStep() {
-    if (_currentStep < 7) {
+    if (_currentStep < 9) {
       _animationController.reset();
       setState(() { _currentStep++; });
       _animationController.forward();
+      _saveDraft(silent: true); // checkpoint progress at each step
     } else {
       _submitReport();
     }
@@ -911,6 +1128,288 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
       setState(() { _currentStep--; });
       _animationController.forward();
     }
+  }
+
+  /// Snapshot of every field on the form, for draft persistence.
+  Map<String, dynamic> _collectFormData() => {
+        'currentStep': _currentStep,
+        'selectedZone': _selectedZone,
+        'selectedHub': _selectedHub,
+        'selectedCommunity': _selectedCommunity,
+        'visitDate': _visitDate.toIso8601String(),
+        'selectedVisitTypes': _selectedVisitTypes,
+        'fullName': _fullNameController.text,
+        'phone': _phoneController.text,
+        'email': _emailController.text,
+        'centreName': _centreNameController.text,
+        'centreAddress': _centreAddressController.text,
+        'contactPerson': _contactPersonController.text,
+        'contactPhone': _contactPhoneController.text,
+        'community': _communityController.text,
+        'otherHub': _otherHubController.text,
+        'youngMen': _youngMen,
+        'youngWomen': _youngWomen,
+        'pwd': _pwd,
+        'staff': _staff,
+        'trainers': _trainers,
+        'formalJobs': _formalJobs,
+        'internships': _internships,
+        'cooperatives': _cooperatives,
+        'furtherTraining': _furtherTraining,
+        'employer': _employerController.text,
+        'course': _courseController.text,
+        'successStory': _successStoryController.text,
+        'youthVoice': _youthVoiceController.text,
+        'rating': _rating,
+        'selectedQuality': _selectedQuality,
+        'selectedIssues': _selectedIssues,
+        'selectedFacilities': _selectedFacilities,
+        'selectedActivities': _selectedActivities,
+        'challenges': _challengesController.text,
+        'recommendations': _recommendationsController.text,
+        'urgency': _urgency,
+        'followUp': _followUpController.text,
+        'consentObtained': _consentObtained,
+        'twoAdultRule': _twoAdultRule,
+        'policyVisible': _policyVisible,
+        'noDiscrimination': _noDiscrimination,
+        'reportingMechanism': _reportingMechanism,
+        'idBadgeWorn': _idBadgeWorn,
+        'noPersonalContacts': _noPersonalContacts,
+        'giftsGuidelines': _giftsGuidelines,
+        'concernIdentified': _concernIdentified,
+        'concernDescription': _concernDescriptionController.text,
+        'actionTaken': _actionTakenController.text,
+        'reportedTo': _reportedToController.text,
+        'finalNotes': _finalNotesController.text,
+        'attendanceSheets': _attendanceSheets,
+        'financialDocs': _financialDocs,
+        'mous': _mous,
+        'trackingSheets': _trackingSheets,
+        'documentNotes': _documentNotesController.text,
+        'photos': _photos,
+        'videos': _videos,
+        'photoCaption': _photoCaptionController.text,
+        'videoDescription': _videoDescriptionController.text,
+        'mediaContext': _mediaContextController.text,
+        'timeArrivedHour': _timeArrived?.hour,
+        'timeArrivedMinute': _timeArrived?.minute,
+        'timeDepartedHour': _timeDeparted?.hour,
+        'timeDepartedMinute': _timeDeparted?.minute,
+      };
+
+  void _applyFormData(Map<String, dynamic> d) {
+    List<String> strList(dynamic v) =>
+        v is List ? v.map((e) => e.toString()).toList() : <String>[];
+    int intOr(dynamic v, int fallback) => v is int ? v : fallback;
+
+    setState(() {
+      _currentStep = intOr(d['currentStep'], 0).clamp(0, 9);
+      _selectedZone = d['selectedZone'] ?? '';
+      _selectedHub = d['selectedHub'] ?? '';
+      _selectedCommunity = d['selectedCommunity'] ?? '';
+      _visitDate = DateTime.tryParse(d['visitDate'] ?? '') ?? DateTime.now();
+      _selectedVisitTypes = strList(d['selectedVisitTypes']);
+      _fullNameController.text = d['fullName'] ?? '';
+      _phoneController.text = d['phone'] ?? '';
+      _emailController.text = d['email'] ?? '';
+      _centreNameController.text = d['centreName'] ?? '';
+      _centreAddressController.text = d['centreAddress'] ?? '';
+      _contactPersonController.text = d['contactPerson'] ?? '';
+      _contactPhoneController.text = d['contactPhone'] ?? '';
+      _communityController.text = d['community'] ?? '';
+      _otherHubController.text = d['otherHub'] ?? '';
+      _youngMen = intOr(d['youngMen'], 0);
+      _youngWomen = intOr(d['youngWomen'], 0);
+      _pwd = intOr(d['pwd'], 0);
+      _staff = intOr(d['staff'], 0);
+      _trainers = intOr(d['trainers'], 0);
+      _formalJobs = intOr(d['formalJobs'], 0);
+      _internships = intOr(d['internships'], 0);
+      _cooperatives = intOr(d['cooperatives'], 0);
+      _furtherTraining = intOr(d['furtherTraining'], 0);
+      _employerController.text = d['employer'] ?? '';
+      _courseController.text = d['course'] ?? '';
+      _successStoryController.text = d['successStory'] ?? '';
+      _youthVoiceController.text = d['youthVoice'] ?? '';
+      _rating = intOr(d['rating'], 0);
+      _selectedQuality = strList(d['selectedQuality']);
+      _selectedIssues = strList(d['selectedIssues']);
+      _selectedFacilities = strList(d['selectedFacilities']);
+      _selectedActivities = strList(d['selectedActivities']);
+      _challengesController.text = d['challenges'] ?? '';
+      _recommendationsController.text = d['recommendations'] ?? '';
+      _urgency = d['urgency'] ?? 'No action needed';
+      _followUpController.text = d['followUp'] ?? '';
+      _consentObtained = d['consentObtained'] == true;
+      _twoAdultRule = d['twoAdultRule'] == true;
+      _policyVisible = d['policyVisible'] == true;
+      _noDiscrimination = d['noDiscrimination'] == true;
+      _reportingMechanism = d['reportingMechanism'] == true;
+      _idBadgeWorn = d['idBadgeWorn'] == true;
+      _noPersonalContacts = d['noPersonalContacts'] == true;
+      _giftsGuidelines = d['giftsGuidelines'] == true;
+      _concernIdentified = d['concernIdentified'] == true;
+      _concernDescriptionController.text = d['concernDescription'] ?? '';
+      _actionTakenController.text = d['actionTaken'] ?? '';
+      _reportedToController.text = d['reportedTo'] ?? '';
+      _finalNotesController.text = d['finalNotes'] ?? '';
+      _attendanceSheets = strList(d['attendanceSheets']);
+      _financialDocs = strList(d['financialDocs']);
+      _mous = strList(d['mous']);
+      _trackingSheets = strList(d['trackingSheets']);
+      _documentNotesController.text = d['documentNotes'] ?? '';
+      _photos = strList(d['photos']);
+      _videos = strList(d['videos']);
+      _photoCaptionController.text = d['photoCaption'] ?? '';
+      _videoDescriptionController.text = d['videoDescription'] ?? '';
+      _mediaContextController.text = d['mediaContext'] ?? '';
+      if (d['timeArrivedHour'] is int) {
+        _timeArrived = TimeOfDay(
+            hour: d['timeArrivedHour'],
+            minute: intOr(d['timeArrivedMinute'], 0));
+      }
+      if (d['timeDepartedHour'] is int) {
+        _timeDeparted = TimeOfDay(
+            hour: d['timeDepartedHour'],
+            minute: intOr(d['timeDepartedMinute'], 0));
+      }
+    });
+  }
+
+  /// True once the user has typed something worth preserving.
+  bool get _formHasContent =>
+      _fullNameController.text.isNotEmpty ||
+      _centreNameController.text.isNotEmpty ||
+      _selectedZone.isNotEmpty ||
+      _selectedHub.isNotEmpty ||
+      _challengesController.text.isNotEmpty ||
+      _finalNotesController.text.isNotEmpty ||
+      _rating > 0 ||
+      _attendanceSheets.isNotEmpty ||
+      _financialDocs.isNotEmpty ||
+      _mous.isNotEmpty ||
+      _trackingSheets.isNotEmpty ||
+      _photos.isNotEmpty ||
+      _videos.isNotEmpty ||
+      _currentStep > 0;
+
+  Future<void> _saveDraft({bool silent = false}) async {
+    if (!mounted) return;
+    if (silent && !_formHasContent) return;
+
+    final draftService = Provider.of<DraftService>(context, listen: false);
+    await draftService.save(_collectFormData());
+    if (!mounted) return;
+
+    setState(() { _lastSavedAt = DateTime.now(); });
+
+    if (!silent) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Draft saved'),
+          backgroundColor: AppColors.success,
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
+  Future<void> _maybeRestoreDraft() async {
+    if (_draftPromptShown || !mounted) return;
+    _draftPromptShown = true;
+
+    final draftService = Provider.of<DraftService>(context, listen: false);
+    if (!draftService.hasDraft) return;
+
+    final savedAt = draftService.savedAt;
+    final when = savedAt == null ? 'earlier' : _friendlyTime(savedAt);
+
+    final restore = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text('Resume draft?'),
+        content: Text(
+          'You have an unfinished report saved $when.\n\n'
+          'Continue where you left off?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Start fresh'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Resume'),
+          ),
+        ],
+      ),
+    );
+
+    if (!mounted) return;
+    if (restore == true) {
+      final data = draftService.load();
+      if (data != null) {
+        _applyFormData(data);
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Draft restored'),
+            backgroundColor: AppColors.info,
+          ),
+        );
+      }
+    } else {
+      await draftService.clear();
+    }
+  }
+
+  String _friendlyTime(DateTime t) {
+    final diff = DateTime.now().difference(t);
+    if (diff.inMinutes < 1) return 'moments ago';
+    if (diff.inMinutes < 60) return '${diff.inMinutes} min ago';
+    if (diff.inHours < 24) return '${diff.inHours} hr ago';
+    return '${diff.inDays} day(s) ago';
+  }
+
+  /// Intercepts back navigation so a part-filled form is never lost silently.
+  Future<bool> _confirmLeave() async {
+    if (!_formHasContent) return true;
+
+    final action = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Leave this report?'),
+        content: const Text('Your progress can be saved as a draft.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, 'cancel'),
+            child: const Text('Keep editing'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, 'discard'),
+            child: const Text('Discard',
+                style: TextStyle(color: AppColors.error)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, 'save'),
+            child: const Text('Save draft'),
+          ),
+        ],
+      ),
+    );
+
+    if (!mounted) return false;
+    if (action == 'save') {
+      await _saveDraft(silent: true);
+      return true;
+    }
+    if (action == 'discard') {
+      await Provider.of<DraftService>(context, listen: false).clear();
+      return true;
+    }
+    return false;
   }
 
   Future<void> _submitReport() async {
@@ -934,22 +1433,101 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
         partnerCompanies: [],
         safeguarding: Safeguarding(consentObtained: _consentObtained, twoAdultRule: _twoAdultRule, policyVisible: _policyVisible, noDiscrimination: _noDiscrimination, reportingMechanismCommunicated: _reportingMechanism, idBadgeWorn: _idBadgeWorn, noPersonalContacts: _noPersonalContacts, giftsFollowGuidelines: _giftsGuidelines, concernIdentified: _concernIdentified, concernDescription: _concernDescriptionController.text, actionTaken: _actionTakenController.text, reportedTo: _reportedToController.text),
         finalNotes: _finalNotesController.text,
+        photoPaths: _photos,
+        videoPaths: _videos,
+        attendanceSheetPaths: _attendanceSheets,
+        financialDocPaths: _financialDocs,
+        mouPaths: _mous,
+        trackingSheetPaths: _trackingSheets,
       );
 
       final reportService = Provider.of<ReportService>(context, listen: false);
       await reportService.createReport(report: report);
+      final warnings = reportService.lastSubmitWarnings;
 
-      // Clear draft after successful submission
-      final draftService = Provider.of<DraftService>(context, listen: false);
-      await draftService.clear();
+      // Submitted - the draft is no longer needed.
+      _autoSaveTimer?.cancel();
+      if (!mounted) return;
+      await Provider.of<DraftService>(context, listen: false).clear();
 
       if (!mounted) return;
       showDialog(
         context: context,
         builder: (context) => AlertDialog(
-          title: const Text('Success! ✅'),
-          content: const Text('Your field report has been submitted successfully.'),
-          actions: [TextButton(onPressed: () { Navigator.pop(context); Navigator.pop(context); }, child: const Text('OK'))],
+          title: Text(warnings.isEmpty ? 'Success! ✅' : 'Submitted with warnings ⚠️'),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(warnings.isEmpty
+                      ? 'Your field report has been submitted successfully.'
+                      : 'Your report WAS saved and sent. These parts did not '
+                          'complete:'),
+                  if (warnings.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    ...warnings.map((w) => Padding(
+                          padding: const EdgeInsets.only(bottom: 6),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              if (!w.trimLeft().startsWith('•'))
+                                const Padding(
+                                  padding: EdgeInsets.only(top: 2, right: 6),
+                                  child: Icon(Icons.warning_amber_rounded,
+                                      size: 16, color: AppColors.warning),
+                                ),
+                              Expanded(
+                                child: SelectableText(
+                                  w,
+                                  style: const TextStyle(fontSize: 13),
+                                ),
+                              ),
+                            ],
+                          ),
+                        )),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Nothing you did is wrong — these are server settings '
+                      'your project admin needs to enable. Tap "Copy details" '
+                      'and send it to them.',
+                      style: TextStyle(
+                          fontSize: 11, color: AppColors.textSecondary),
+                    ),
+                  ],
+                  if (_totalAttachments > 0) ...[
+                    const SizedBox(height: 8),
+                    Text('$_totalAttachments file(s) attached to the email.',
+                        style: const TextStyle(
+                            fontSize: 12, color: AppColors.textSecondary)),
+                  ],
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            if (warnings.isNotEmpty)
+              TextButton(
+                onPressed: () {
+                  Clipboard.setData(ClipboardData(text: warnings.join('\n')));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Details copied to clipboard'),
+                      backgroundColor: AppColors.info,
+                    ),
+                  );
+                },
+                child: const Text('Copy details'),
+              ),
+            TextButton(
+                onPressed: () {
+                  Navigator.pop(context);
+                  Navigator.pop(context);
+                },
+                child: const Text('OK')),
+          ],
         ),
       );
     } catch (e) {
@@ -958,202 +1536,5 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
     } finally {
       setState(() { _isSubmitting = false; });
     }
-  }
-
-  // Draft management methods
-  Map<String, dynamic> _formDataToMap() {
-    return {
-      'selectedZone': _selectedZone,
-      'selectedHub': _selectedHub,
-      'selectedCommunity': _selectedCommunity,
-      'visitDate': _visitDate.toIso8601String(),
-      'selectedVisitTypes': _selectedVisitTypes,
-      'fullName': _fullNameController.text,
-      'phone': _phoneController.text,
-      'email': _emailController.text,
-      'centreName': _centreNameController.text,
-      'centreAddress': _centreAddressController.text,
-      'contactPerson': _contactPersonController.text,
-      'contactPhone': _contactPhoneController.text,
-      'community': _communityController.text,
-      'youngMen': _youngMen,
-      'youngWomen': _youngWomen,
-      'pwd': _pwd,
-      'staff': _staff,
-      'trainers': _trainers,
-      'formalJobs': _formalJobs,
-      'internships': _internships,
-      'cooperatives': _cooperatives,
-      'furtherTraining': _furtherTraining,
-      'employer': _employerController.text,
-      'course': _courseController.text,
-      'successStory': _successStoryController.text,
-      'youthVoice': _youthVoiceController.text,
-      'rating': _rating,
-      'selectedQuality': _selectedQuality,
-      'selectedIssues': _selectedIssues,
-      'selectedFacilities': _selectedFacilities,
-      'selectedActivities': _selectedActivities,
-      'challenges': _challengesController.text,
-      'recommendations': _recommendationsController.text,
-      'urgency': _urgency,
-      'followUp': _followUpController.text,
-      'consentObtained': _consentObtained,
-      'twoAdultRule': _twoAdultRule,
-      'policyVisible': _policyVisible,
-      'noDiscrimination': _noDiscrimination,
-      'reportingMechanism': _reportingMechanism,
-      'idBadgeWorn': _idBadgeWorn,
-      'noPersonalContacts': _noPersonalContacts,
-      'giftsGuidelines': _giftsGuidelines,
-      'concernIdentified': _concernIdentified,
-      'concernDescription': _concernDescriptionController.text,
-      'actionTaken': _actionTakenController.text,
-      'reportedTo': _reportedToController.text,
-      'finalNotes': _finalNotesController.text,
-      'currentStep': _currentStep,
-    };
-  }
-
-  void _restoreFromMap(Map<String, dynamic> data) {
-    setState(() {
-      _selectedZone = data['selectedZone'] ?? '';
-      _selectedHub = data['selectedHub'] ?? '';
-      _selectedCommunity = data['selectedCommunity'] ?? '';
-      _visitDate = DateTime.tryParse(data['visitDate'] ?? '') ?? DateTime.now();
-      _selectedVisitTypes = List<String>.from(data['selectedVisitTypes'] ?? []);
-      _fullNameController.text = data['fullName'] ?? '';
-      _phoneController.text = data['phone'] ?? '';
-      _emailController.text = data['email'] ?? '';
-      _centreNameController.text = data['centreName'] ?? '';
-      _centreAddressController.text = data['centreAddress'] ?? '';
-      _contactPersonController.text = data['contactPerson'] ?? '';
-      _contactPhoneController.text = data['contactPhone'] ?? '';
-      _communityController.text = data['community'] ?? '';
-      _youngMen = data['youngMen'] ?? 0;
-      _youngWomen = data['youngWomen'] ?? 0;
-      _pwd = data['pwd'] ?? 0;
-      _staff = data['staff'] ?? 0;
-      _trainers = data['trainers'] ?? 0;
-      _formalJobs = data['formalJobs'] ?? 0;
-      _internships = data['internships'] ?? 0;
-      _cooperatives = data['cooperatives'] ?? 0;
-      _furtherTraining = data['furtherTraining'] ?? 0;
-      _employerController.text = data['employer'] ?? '';
-      _courseController.text = data['course'] ?? '';
-      _successStoryController.text = data['successStory'] ?? '';
-      _youthVoiceController.text = data['youthVoice'] ?? '';
-      _rating = data['rating'] ?? 0;
-      _selectedQuality = List<String>.from(data['selectedQuality'] ?? []);
-      _selectedIssues = List<String>.from(data['selectedIssues'] ?? []);
-      _selectedFacilities = List<String>.from(data['selectedFacilities'] ?? []);
-      _selectedActivities = List<String>.from(data['selectedActivities'] ?? []);
-      _challengesController.text = data['challenges'] ?? '';
-      _recommendationsController.text = data['recommendations'] ?? '';
-      _urgency = data['urgency'] ?? 'No action needed';
-      _followUpController.text = data['followUp'] ?? '';
-      _consentObtained = data['consentObtained'] ?? false;
-      _twoAdultRule = data['twoAdultRule'] ?? false;
-      _policyVisible = data['policyVisible'] ?? false;
-      _noDiscrimination = data['noDiscrimination'] ?? false;
-      _reportingMechanism = data['reportingMechanism'] ?? false;
-      _idBadgeWorn = data['idBadgeWorn'] ?? false;
-      _noPersonalContacts = data['noPersonalContacts'] ?? false;
-      _giftsGuidelines = data['giftsGuidelines'] ?? false;
-      _concernIdentified = data['concernIdentified'] ?? false;
-      _concernDescriptionController.text = data['concernDescription'] ?? '';
-      _actionTakenController.text = data['actionTaken'] ?? '';
-      _reportedToController.text = data['reportedTo'] ?? '';
-      _finalNotesController.text = data['finalNotes'] ?? '';
-      _currentStep = data['currentStep'] ?? 0;
-    });
-  }
-
-  Future<void> _saveDraft({bool silent = false}) async {
-    try {
-      final draftService = Provider.of<DraftService>(context, listen: false);
-      await draftService.save(_formDataToMap());
-      setState(() { _lastSavedAt = DateTime.now(); });
-      if (!silent && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Draft saved'), backgroundColor: AppColors.success),
-        );
-      }
-    } catch (e) {
-      if (!silent && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to save draft: $e'), backgroundColor: AppColors.error),
-        );
-      }
-    }
-  }
-
-  Future<void> _maybeRestoreDraft() async {
-    final draftService = Provider.of<DraftService>(context, listen: false);
-    if (!draftService.hasDraft) return;
-
-    final savedAt = draftService.savedAt;
-    final timeAgo = savedAt != null ? _friendlyTime(savedAt) : 'earlier';
-
-    final restore = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Unfinished Report'),
-        content: Text('You have an unfinished report from $timeAgo. Would you like to continue?'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Discard')),
-          ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text('Continue')),
-        ],
-      ),
-    );
-
-    if (restore == true) {
-      final data = draftService.load();
-      if (data != null) {
-        _restoreFromMap(data);
-        setState(() { _draftRestored = true; });
-      }
-    } else {
-      await draftService.clear();
-    }
-  }
-
-  Future<bool> _onWillPop() async {
-    // If form is empty, just pop
-    if (_fullNameController.text.isEmpty && _phoneController.text.isEmpty) {
-      return true;
-    }
-
-    final result = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Save Draft?'),
-        content: const Text('You have unsaved changes. Would you like to save as draft?'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, 'discard'), child: const Text('Discard')),
-          TextButton(onPressed: () => Navigator.pop(context, 'cancel'), child: const Text('Cancel')),
-          ElevatedButton(onPressed: () => Navigator.pop(context, 'save'), child: const Text('Save Draft')),
-        ],
-      ),
-    );
-
-    if (result == 'save') {
-      await _saveDraft();
-      return true;
-    } else if (result == 'discard') {
-      final draftService = Provider.of<DraftService>(context, listen: false);
-      await draftService.clear();
-      return true;
-    }
-    return false;
-  }
-
-  String _friendlyTime(DateTime dt) {
-    final now = DateTime.now();
-    final diff = now.difference(dt);
-    if (diff.inSeconds < 60) return 'just now';
-    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
-    if (diff.inHours < 24) return '${diff.inHours}h ago';
-    return '${diff.inDays}d ago';
   }
 }

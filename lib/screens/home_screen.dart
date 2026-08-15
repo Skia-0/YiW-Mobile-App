@@ -23,7 +23,8 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    _loadData();
+    // Defer: loadReports() notifies listeners, which cannot happen during build.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadData());
     _loadSettings();
   }
 
@@ -323,7 +324,19 @@ class _HomeScreenState extends State<HomeScreen> {
                   leading: CircleAvatar(
                     backgroundColor: AppColors.primary,
                     radius: 30,
-                    child: Text(user?.fullName?.substring(0, 1).toUpperCase() ?? 'U', style: const TextStyle(fontSize: 24, color: Colors.white, fontWeight: FontWeight.bold)),
+                    backgroundImage: (user?.photoUrl != null &&
+                            (user?.photoUrl as String).isNotEmpty)
+                        ? NetworkImage(user.photoUrl as String)
+                        : null,
+                    child: (user?.photoUrl == null ||
+                            (user?.photoUrl as String).isEmpty)
+                        ? Text(
+                            user?.fullName?.substring(0, 1).toUpperCase() ?? 'U',
+                            style: const TextStyle(
+                                fontSize: 24,
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold))
+                        : null,
                   ),
                   title: Text(user?.fullName ?? 'User', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
                   subtitle: Column(
@@ -335,7 +348,8 @@ class _HomeScreenState extends State<HomeScreen> {
                     ],
                   ),
                   trailing: const Icon(Icons.edit),
-                  onTap: () { /* Edit profile */ },
+                  // Was an empty stub: onTap: () { /* Edit profile */ }
+                  onTap: () => Navigator.pushNamed(context, '/edit-profile'),
                 ),
               ],
             ),

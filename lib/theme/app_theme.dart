@@ -163,17 +163,17 @@ class AppTheme {
         color: AppColorsDark.divider,
         thickness: 1,
       ),
-      // Explicit surface/text theming so screens flip white -> black properly.
+      // Without these the dark theme kept light-mode text/surfaces.
       canvasColor: AppColorsDark.surface,
       cardColor: AppColorsDark.card,
-      dialogTheme: DialogThemeData(
+      dialogTheme: const DialogThemeData(
         backgroundColor: AppColorsDark.card,
-        titleTextStyle: const TextStyle(
+        titleTextStyle: TextStyle(
           color: AppColorsDark.textPrimary,
           fontSize: 20,
           fontWeight: FontWeight.w600,
         ),
-        contentTextStyle: const TextStyle(
+        contentTextStyle: TextStyle(
           color: AppColorsDark.textPrimary,
           fontSize: 14,
         ),

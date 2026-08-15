@@ -11,19 +11,19 @@ import 'package:yiw_field_report/services/draft_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
+  
   // Initialize Firebase (uses platform-specific config files)
   await Firebase.initializeApp();
-
-  // Initialize Hive for offline storage.
-  // NOTE: these must be opened as Box<String> to match OfflineService /
-  // DraftService. Previously they were opened untyped, which made Hive throw
-  // on every later access and silently broke settings persistence.
+  
+  // Initialize Hive for offline storage
   await Hive.initFlutter();
+  // Must be Box<String> to match OfflineService. Previously these were opened
+  // untyped, which made Hive throw on every later access - silently breaking
+  // all settings persistence.
   await Hive.openBox<String>('reports');
   await Hive.openBox<String>('drafts');
   await Hive.openBox<String>('settings');
-
+  
   // Initialize services
   final authService = AuthService();
   final reportService = ReportService();
@@ -32,9 +32,7 @@ void main() async {
 
   final themeService = ThemeService(offlineService);
   await themeService.load();
-
-  final draftService = DraftService();
-
+  
   runApp(
     MultiProvider(
       providers: [
@@ -42,7 +40,7 @@ void main() async {
         ChangeNotifierProvider(create: (_) => reportService),
         ChangeNotifierProvider(create: (_) => offlineService),
         ChangeNotifierProvider(create: (_) => themeService),
-        Provider<DraftService>(create: (_) => draftService),
+        Provider<DraftService>(create: (_) => DraftService()),
       ],
       child: const YiWFieldReportApp(),
     ),

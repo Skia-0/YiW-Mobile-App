@@ -7,6 +7,7 @@ import 'package:yiw_field_report/screens/report_form_screen.dart';
 import 'package:yiw_field_report/screens/saved_reports_screen.dart';
 import 'package:yiw_field_report/screens/settings_screen.dart';
 import 'package:yiw_field_report/screens/register_screen.dart';
+import 'package:yiw_field_report/screens/edit_profile_screen.dart';
 import 'package:yiw_field_report/services/auth_service.dart';
 import 'package:yiw_field_report/services/theme_service.dart';
 
@@ -31,6 +32,7 @@ class YiWFieldReportApp extends StatelessWidget {
         '/saved-reports': (context) => const SavedReportsScreen(),
         '/settings': (context) => const SettingsScreen(),
         '/register': (context) => const RegisterScreen(),
+        '/edit-profile': (context) => const EditProfileScreen(),
       },
     );
   }
