@@ -82,6 +82,11 @@ class AppConfig {
     ],
   };
 
+  /// Every hub across all zones, used to tell a configured hub from one
+  /// typed in via "Other".
+  static List<String> get allHubs =>
+      hubsByZone.values.expand((hubs) => hubs).toList();
+
   // Communities by Hub
   static const Map<String, List<String>> communitiesByHub = {
     'Accra Technical University': ['ATU Campus', 'Accra Central', 'Accra'],

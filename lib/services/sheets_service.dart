@@ -398,8 +398,8 @@ class SheetsService {
       report.focalPerson.visitDate.toIso8601String(),
       // F: Visit Type
       report.focalPerson.visitTypes.join(', '),
-      // G: Hub / TSP
-      report.trainingCentre.hub,
+      // G: Hub / TSP - use the actual typed name, not "Other"
+      report.trainingCentre.otherHubName ?? report.trainingCentre.hub,
       // H: Community
       report.trainingCentre.community,
       // I: Training Centre
