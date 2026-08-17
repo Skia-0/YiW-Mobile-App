@@ -280,8 +280,15 @@ class ReportService extends ChangeNotifier {
 
   Future<void> _updateGoogleSheet(FieldReport report) async {
     try {
+      debugPrint('REPORT_SERVICE: Updating Google Sheet for report ${report.id}');
+      debugPrint('REPORT_SERVICE: Hub = "${report.trainingCentre.hub}"');
+      debugPrint('REPORT_SERVICE: OtherHubName = "${report.trainingCentre.otherHubName}"');
+      
       await _sheetsService.addReportToSheet(report);
+      
       final tabs = _sheetsService.lastWrittenTabs;
+      debugPrint('REPORT_SERVICE: Written to tabs: $tabs');
+      
       if (tabs.length < 2 && (report.trainingCentre.hub).trim().isNotEmpty) {
         _lastSubmitWarnings
             .add('Recorded in ${tabs.join(", ")} only (no hub tab written)');
@@ -289,7 +296,6 @@ class ReportService extends ChangeNotifier {
     } catch (e) {
       debugPrint('Error updating Google Sheet: $e');
       _lastSubmitWarnings.add('Google Sheet was not updated: $e');
-      // Don't rethrow - sheet update failure shouldn't block report submission
     }
   }
 
