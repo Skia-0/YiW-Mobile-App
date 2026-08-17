@@ -5,6 +5,7 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'package:googleapis/sheets/v4.dart' as sheets;
 import 'package:googleapis_auth/auth_io.dart';
 import 'package:yiw_field_report/models/field_report.dart';
+import 'package:yiw_field_report/config/app_config.dart';
 
 class SheetsService {
   String? _spreadsheetId;
@@ -36,6 +37,9 @@ class SheetsService {
 
   static const String _sheetName = 'Field Reports';
 
+  /// Tabs written by the most recent submit, for reporting back to the user.
+  final List<String> lastWrittenTabs = [];
+
   Future<void> addReportToSheet(FieldReport report) async {
     AutoRefreshingAuthClient? client;
     try {
@@ -55,13 +59,19 @@ class SheetsService {
 
       final sheetsApi = sheets.SheetsApi(client);
       final row = _prepareRowData(report);
+      lastWrittenTabs.clear();
 
       // 1. The master log - every report from every hub.
       await _appendToTab(sheetsApi, _sheetName, row);
 
       // 2. The hub's own tab, so each hub has its own running sheet
-      //    alongside the general one.
-      final hubTab = hubTabName(report.trainingCentre.hub);
+      //    alongside the general one. Hubs that aren't in the configured list
+      //    (entered via "Other") are collected in one "Unknown Hubs" tab so
+      //    they can be reviewed and promoted later.
+      final rawHub = report.trainingCentre.hub;
+      final hubTab = hubTabName(rawHub, knownHubs: AppConfig.allHubs);
+      // Loud so a mis-route is obvious in the console instead of silent.
+      debugPrint('SHEETS: hub on report = "$rawHub" -> tab "$hubTab"');
       if (hubTab != null && hubTab != _sheetName) {
         try {
           await _appendToTab(sheetsApi, hubTab, row);
@@ -84,6 +94,76 @@ class SheetsService {
   }
 
 
+  /// Reads row 1 of [tabName] so values can be matched to the sheet's own
+  /// column order instead of assuming ours.
+  Future<List<String>> _readHeader(sheets.SheetsApi api, String tabName) async {
+    try {
+      final res = await api.spreadsheets.values.get(
+        _spreadsheetId!,
+        "'$tabName'!A1:BZ1",
+      );
+      final first = res.values?.isNotEmpty == true ? res.values!.first : [];
+      return first.map((c) => c.toString().trim()).toList();
+    } catch (e) {
+      debugPrint('Could not read header of "$tabName": $e');
+      return [];
+    }
+  }
+
+  /// Reorders our row to match the sheet's existing header.
+  ///
+  /// The previous version appended a fixed 48-column row and only wrote its own
+  /// header when row 1 was empty. On a sheet that already had the team's own
+  /// headers in a different order, every value landed under the wrong title.
+  /// Matching by header text keeps data under the right column whatever the
+  /// order, and leaves unrecognised columns untouched.
+  List<dynamic> _alignToHeader(
+    List<String> sheetHeader,
+    List<dynamic> row,
+  ) {
+    if (sheetHeader.isEmpty) return row;
+
+    String norm(String h) =>
+        h.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
+
+    // Our own header -> value, so we can look up by name.
+    final ours = <String, dynamic>{};
+    for (var i = 0; i < _headerRow.length && i < row.length; i++) {
+      ours[norm(_headerRow[i])] = row[i];
+    }
+
+    // A few tolerated spellings for the same column.
+    const aliases = <String, List<String>>{
+      'fieldpersonnelname': ['name', 'fieldofficer', 'officer', 'fullname',
+          'personnelname', 'submittedby'],
+      'submittedat': ['timestamp', 'date', 'datesubmitted', 'submissiondate'],
+      'phone': ['phonenumber', 'contact', 'contactnumber', 'mobile'],
+      'zone': ['region', 'zoneregion'],
+      'hubtsp': ['hub', 'tsp', 'hubname', 'trainingserviceprovider'],
+      'trainingcentre': ['centre', 'center', 'trainingcenter', 'centrename'],
+      'visitdate': ['dateofvisit'],
+      'visittype': ['typeofvisit', 'visittypes'],
+      'male': ['youngmen', 'men', 'malecount'],
+      'female': ['youngwomen', 'women', 'femalecount'],
+      'pwd': ['personswithdisability', 'disability'],
+      'documentlinks': ['documents', 'doclinks', 'files'],
+      'medialinks': ['media', 'photolinks', 'photosvideos'],
+      'reportid': ['id', 'reportreference'],
+    };
+
+    dynamic lookup(String sheetColumn) {
+      final key = norm(sheetColumn);
+      if (ours.containsKey(key)) return ours[key];
+      for (final entry in aliases.entries) {
+        final matches = key == entry.key || entry.value.contains(key);
+        if (matches && ours.containsKey(entry.key)) return ours[entry.key];
+      }
+      return null; // unknown column - leave it alone
+    }
+
+    return sheetHeader.map<dynamic>((h) => lookup(h) ?? '').toList();
+  }
+
   /// Appends one row to [tabName], creating and heading the tab if needed.
   Future<void> _appendToTab(
     sheets.SheetsApi api,
@@ -92,17 +172,23 @@ class SheetsService {
   ) async {
     // Make sure the tab exists and is headed, otherwise append throws
     // "Unable to parse range" and the report silently never lands.
-    await _ensureSheetReady(api, tabName);
+    // Resolves to the team's existing tab when one matches case-insensitively.
+    tabName = await _ensureSheetReady(api, tabName);
+
+    // Match the sheet's own column order rather than assuming ours.
+    final sheetHeader = await _readHeader(api, tabName);
+    final aligned = _alignToHeader(sheetHeader, row);
 
     // append() writes after the last populated row, so the newest report
     // always appears at the bottom of that tab.
     final response = await api.spreadsheets.values.append(
-      sheets.ValueRange(values: [row]),
+      sheets.ValueRange(values: [aligned]),
       _spreadsheetId!,
       "'$tabName'!A:AV",
       valueInputOption: 'USER_ENTERED',
       insertDataOption: 'INSERT_ROWS',
     );
+    lastWrittenTabs.add(tabName);
     debugPrint(
         'Appended to "$tabName" at ${response.updates?.updatedRange ?? "(unknown row)"}');
   }
@@ -112,9 +198,20 @@ class SheetsService {
   /// Returns null when no hub was recorded. Google Sheets tab titles cannot
   /// contain : \\ / ? * [ ] and are capped at 100 characters, so the hub name
   /// is sanitised rather than used raw.
-  static String? hubTabName(String? hub) {
+  /// Tab used for hubs typed via "Other" rather than picked from the list.
+  static const String unknownHubsTab = 'Unknown Hub';
+
+  static String? hubTabName(String? hub, {List<String>? knownHubs}) {
     final name = hub?.trim() ?? '';
     if (name.isEmpty) return null;
+
+    // "Other" should never become a tab title in its own right.
+    if (name.toLowerCase() == 'other') return unknownHubsTab;
+
+    if (knownHubs != null &&
+        !knownHubs.any((h) => h.toLowerCase() == name.toLowerCase())) {
+      return unknownHubsTab;
+    }
     var clean = name.replaceAll(RegExp(r"[:\\/?*\[\]]"), ' ')
         .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
@@ -126,7 +223,28 @@ class SheetsService {
   ///
   /// Without this, a renamed/missing tab or an empty sheet made every append
   /// fail with an unhelpful parse error.
-  Future<void> _ensureSheetReady(sheets.SheetsApi api,
+  /// Finds an existing tab whose name matches [wanted] ignoring case, spacing
+  /// and punctuation, so "Unknown hubs", "UNKNOWN HUBS" and "Unknown-Hubs" all
+  /// resolve to the team's existing tab instead of creating a duplicate.
+  String? _matchExistingTab(List<String> existing, String wanted) {
+    String norm(String v) =>
+        v.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
+    // Also fold a trailing plural, so "Unknown Hub" and "Unknown Hubs" are
+    // treated as the same tab rather than creating a duplicate.
+    String singular(String v) =>
+        v.endsWith('s') ? v.substring(0, v.length - 1) : v;
+
+    final target = norm(wanted);
+    for (final title in existing) {
+      if (norm(title) == target) return title;
+    }
+    for (final title in existing) {
+      if (singular(norm(title)) == singular(target)) return title;
+    }
+    return null;
+  }
+
+  Future<String> _ensureSheetReady(sheets.SheetsApi api,
       [String tabName = _sheetName]) async {
     final spreadsheet = await api.spreadsheets.get(_spreadsheetId!);
     final existing = spreadsheet.sheets
@@ -134,6 +252,12 @@ class SheetsService {
             .whereType<String>()
             .toList() ??
         <String>[];
+
+    // Reuse the team's tab if it already exists under a different casing.
+    final match = _matchExistingTab(existing, tabName);
+    debugPrint('SHEETS: existing tabs = ${existing.join(" | ")}');
+    debugPrint('SHEETS: wanted "$tabName" -> matched ${match ?? "(none, will create)"}');
+    if (match != null) tabName = match;
 
     if (!existing.contains(tabName)) {
       debugPrint('Creating "$tabName" tab (found: ${existing.join(", ")})');
@@ -192,11 +316,18 @@ class SheetsService {
         );
       }
     }
+    return tabName;
   }
 
   /// Test hooks - keep the row and header widths verifiably in sync.
   @visibleForTesting
   static List<String> get headerRowForTest => _headerRow;
+  @visibleForTesting
+  static String? matchTabForTest(List<String> existing, String wanted) =>
+      SheetsService()._matchExistingTab(existing, wanted);
+  @visibleForTesting
+  static List<dynamic> alignForTest(List<String> header, List<dynamic> row) =>
+      SheetsService()._alignToHeader(header, row);
   @visibleForTesting
   static List<dynamic> rowForTest(FieldReport r) =>
       SheetsService()._prepareRowData(r);

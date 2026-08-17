@@ -159,6 +159,17 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
     super.dispose();
   }
 
+  /// The hub name to record.
+  ///
+  /// When "Other" is chosen the dropdown value is the literal string "Other",
+  /// which is useless in the spreadsheet - use what the officer typed instead.
+  String get _effectiveHub => _selectedHub == 'Other'
+      ? _otherHubController.text.trim()
+      : _selectedHub;
+
+  /// True when the hub was typed rather than picked from the configured list.
+  bool get _isUnknownHub => _selectedHub == 'Other';
+
   List<String> _getHubsForZone() => AppConfig.hubsByZone[_selectedZone] ?? [];
   List<String> _getCommunitiesForHub() => AppConfig.communitiesByHub[_selectedHub] ?? [];
 
@@ -494,7 +505,22 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
             onChanged: (v) => setState(() { _selectedHub = v!; _selectedCommunity = ''; }),
             validator: (v) => v == null ? 'Required' : null,
           ),
-          communities.isNotEmpty
+          _selectedHub == 'Other'
+              ? TextFormField(
+                  controller: _otherHubController,
+                  textCapitalization: TextCapitalization.words,
+                  decoration: const InputDecoration(
+                    labelText: 'Hub name *',
+                    hintText: 'Type the hub name',
+                    prefixIcon: Icon(Icons.edit_outlined),
+                    helperText: 'Logged under "Unknown Hubs"',
+                  ),
+                  validator: (v) => (v == null || v.trim().isEmpty)
+                      ? 'Enter the hub name'
+                      : null,
+                  onChanged: (_) => setState(() {}),
+                )
+              : communities.isNotEmpty
               ? DropdownButtonFormField<String>(
                   decoration: const InputDecoration(labelText: 'Community *', prefixIcon: Icon(Icons.location_city_outlined)),
                   value: _selectedCommunity.isEmpty ? null : _selectedCommunity,
@@ -1424,7 +1450,7 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
         id: '', createdAt: DateTime.now(), updatedAt: DateTime.now(),
         userId: user?.uid, userName: _fullNameController.text,
         focalPerson: FocalPerson(fullName: _fullNameController.text, phoneNumber: _phoneController.text, email: _emailController.text, zone: _selectedZone, visitDate: _visitDate, visitTypes: _selectedVisitTypes),
-        trainingCentre: TrainingCentre(hub: _selectedHub, community: _selectedCommunity.isNotEmpty ? _selectedCommunity : _communityController.text, centreName: _centreNameController.text, centreAddress: _centreAddressController.text, contactPerson: _contactPersonController.text, contactPhone: _contactPhoneController.text, timeArrived: _timeArrived != null ? DateTime(2026, 1, 1, _timeArrived!.hour, _timeArrived!.minute) : null, timeDeparted: _timeDeparted != null ? DateTime(2026, 1, 1, _timeDeparted!.hour, _timeDeparted!.minute) : null),
+        trainingCentre: TrainingCentre(hub: _effectiveHub, community: _selectedCommunity.isNotEmpty ? _selectedCommunity : _communityController.text, centreName: _centreNameController.text, centreAddress: _centreAddressController.text, contactPerson: _contactPersonController.text, contactPhone: _contactPhoneController.text, timeArrived: _timeArrived != null ? DateTime(2026, 1, 1, _timeArrived!.hour, _timeArrived!.minute) : null, timeDeparted: _timeDeparted != null ? DateTime(2026, 1, 1, _timeDeparted!.hour, _timeDeparted!.minute) : null),
         attendance: Attendance(youngMenPresent: _youngMen, youngWomenPresent: _youngWomen, personsWithDisability: _pwd, hubStaffOnDuty: _staff, trainersPresent: _trainers),
         employmentOutcome: EmploymentOutcome(placedInFormalEmployment: _formalJobs, placedInInternships: _internships, joinedCooperatives: _cooperatives, referredForFurtherTraining: _furtherTraining, employerNames: _employerController.text.isNotEmpty ? [_employerController.text] : []),
         courseEnrolledIn: _courseController.text, successStory: _successStoryController.text, youthVoice: _youthVoiceController.text,

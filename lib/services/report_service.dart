@@ -281,6 +281,11 @@ class ReportService extends ChangeNotifier {
   Future<void> _updateGoogleSheet(FieldReport report) async {
     try {
       await _sheetsService.addReportToSheet(report);
+      final tabs = _sheetsService.lastWrittenTabs;
+      if (tabs.length < 2 && (report.trainingCentre.hub).trim().isNotEmpty) {
+        _lastSubmitWarnings
+            .add('Recorded in ${tabs.join(", ")} only (no hub tab written)');
+      }
     } catch (e) {
       debugPrint('Error updating Google Sheet: $e');
       _lastSubmitWarnings.add('Google Sheet was not updated: $e');
