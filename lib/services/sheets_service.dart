@@ -64,32 +64,62 @@ class SheetsService {
       // 1. The master log - every report from every hub.
       await _appendToTab(sheetsApi, _sheetName, row);
 
-      // 2. The hub's own tab, so each hub has its own running sheet
-      //    alongside the general one. Hubs that aren't in the configured list
-      //    (entered via "Other") are collected in one "Unknown Hubs" tab so
-      //    they can be reviewed and promoted later.
+      // 2. The hub's own tab
       final rawHub = report.trainingCentre.hub;
       final hubTab = hubTabName(rawHub, knownHubs: AppConfig.allHubs);
-      // Loud so a mis-route is obvious in the console instead of silent.
       debugPrint('SHEETS: hub on report = "$rawHub" -> tab "$hubTab"');
+      
       if (hubTab != null && hubTab != _sheetName) {
         try {
           await _appendToTab(sheetsApi, hubTab, row);
+          debugPrint('Successfully wrote to hub tab: $hubTab');
         } catch (e) {
-          // The master log already has the report; don't fail the submit
-          // just because the per-hub copy didn't write.
-          debugPrint('Could not write hub tab "$hubTab": $e');
+          debugPrint('ERROR writing to hub tab "$hubTab": $e');
+          // Try to create the tab manually if it doesn't exist
+          try {
+            await _createTabManually(sheetsApi, hubTab);
+            await _appendToTab(sheetsApi, hubTab, row);
+            debugPrint('Created and wrote to new hub tab: $hubTab');
+          } catch (e2) {
+            debugPrint('Failed to create/write to hub tab: $e2');
+          }
         }
       } else if (hubTab == null) {
-        debugPrint(
-            'No hub on report ${report.id}; logged to "$_sheetName" only');
+        debugPrint('No hub on report ${report.id}; logged to "$_sheetName" only');
       }
     } catch (e) {
-      // Surfaced so a silent sheet failure doesn't look like success.
       debugPrint('Error adding report to Google Sheet: $e');
       rethrow;
     } finally {
       client?.close();
+    }
+  }
+
+  Future<void> _createTabManually(sheets.SheetsApi api, String tabName) async {
+    try {
+      debugPrint('Manually creating tab: $tabName');
+      await api.spreadsheets.batchUpdate(
+        sheets.BatchUpdateSpreadsheetRequest(requests: [
+          sheets.Request(
+            addSheet: sheets.AddSheetRequest(
+              properties: sheets.SheetProperties(title: tabName),
+            ),
+          ),
+        ]),
+        _spreadsheetId!,
+      );
+      
+      // Add headers
+      await api.spreadsheets.values.update(
+        sheets.ValueRange(values: [_headerRow]),
+        _spreadsheetId!,
+        "'$tabName'!A1:AV1",
+        valueInputOption: 'RAW',
+      );
+      debugPrint('Tab "$tabName" created with headers');
+    } catch (e) {
+      debugPrint('Error creating tab "$tabName": $e');
+      rethrow;
     }
   }
 
@@ -206,12 +236,18 @@ class SheetsService {
     if (name.isEmpty) return null;
 
     // "Other" should never become a tab title in its own right.
-    if (name.toLowerCase() == 'other') return unknownHubsTab;
-
-    if (knownHubs != null &&
-        !knownHubs.any((h) => h.toLowerCase() == name.toLowerCase())) {
+    if (name.toLowerCase() == 'other') {
+      debugPrint('SHEETS: hub is "Other" -> routing to "$unknownHubsTab"');
       return unknownHubsTab;
     }
+
+    // Check if the hub is in the known list
+    if (knownHubs != null &&
+        !knownHubs.any((h) => h.toLowerCase() == name.toLowerCase())) {
+      debugPrint('SHEETS: hub "$name" not in known list -> routing to "$unknownHubsTab"');
+      return unknownHubsTab;
+    }
+    
     var clean = name.replaceAll(RegExp(r"[:\\/?*\[\]]"), ' ')
         .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
@@ -246,77 +282,72 @@ class SheetsService {
 
   Future<String> _ensureSheetReady(sheets.SheetsApi api,
       [String tabName = _sheetName]) async {
-    final spreadsheet = await api.spreadsheets.get(_spreadsheetId!);
-    final existing = spreadsheet.sheets
-            ?.map((s) => s.properties?.title)
-            .whereType<String>()
-            .toList() ??
-        <String>[];
+    try {
+      final spreadsheet = await api.spreadsheets.get(_spreadsheetId!);
+      final existing = spreadsheet.sheets
+              ?.map((s) => s.properties?.title)
+              .whereType<String>()
+              .toList() ??
+          <String>[];
 
-    // Reuse the team's tab if it already exists under a different casing.
-    final match = _matchExistingTab(existing, tabName);
-    debugPrint('SHEETS: existing tabs = ${existing.join(" | ")}');
-    debugPrint('SHEETS: wanted "$tabName" -> matched ${match ?? "(none, will create)"}');
-    if (match != null) tabName = match;
+      // Reuse the team's tab if it already exists under a different casing.
+      final match = _matchExistingTab(existing, tabName);
+      debugPrint('SHEETS: existing tabs = ${existing.join(" | ")}');
+      debugPrint('SHEETS: wanted "$tabName" -> matched ${match ?? "(none, will create)"}');
+      if (match != null) tabName = match;
 
-    if (!existing.contains(tabName)) {
-      debugPrint('Creating "$tabName" tab (found: ${existing.join(", ")})');
-      await api.spreadsheets.batchUpdate(
-        sheets.BatchUpdateSpreadsheetRequest(requests: [
-          sheets.Request(
-            addSheet: sheets.AddSheetRequest(
-              properties: sheets.SheetProperties(title: tabName),
-            ),
-          ),
-        ]),
-        _spreadsheetId!,
-      );
-    }
+      if (!existing.contains(tabName)) {
+        debugPrint('Creating "$tabName" tab (found: ${existing.join(", ")})');
+        try {
+          await api.spreadsheets.batchUpdate(
+            sheets.BatchUpdateSpreadsheetRequest(requests: [
+              sheets.Request(
+                addSheet: sheets.AddSheetRequest(
+                  properties: sheets.SheetProperties(title: tabName),
+                ),
+              ),
+            ]),
+            _spreadsheetId!,
+          );
+          debugPrint('Tab "$tabName" created successfully');
+        } catch (e) {
+          debugPrint('Error creating tab "$tabName": $e');
+          // Tab might already exist with different casing
+          final existingMatch = _matchExistingTab(existing, tabName);
+          if (existingMatch != null) {
+            tabName = existingMatch;
+            debugPrint('Using existing tab: $tabName');
+          } else {
+            rethrow;
+          }
+        }
+      }
 
-    // Header row: only write it when row 1 is empty, so an existing sheet
-    // with the team's own headers is left untouched.
-    final firstRow = await api.spreadsheets.values.get(
-      _spreadsheetId!,
-      "'$tabName'!A1:AV1",
-    );
-    final isEmpty = firstRow.values == null ||
-        firstRow.values!.isEmpty ||
-        firstRow.values!.first.every((c) => c.toString().trim().isEmpty);
-
-    if (isEmpty) {
-      debugPrint('Writing header row to "$tabName"');
-      await api.spreadsheets.values.update(
-        sheets.ValueRange(values: [_headerRow]),
+      // Header row: only write it when row 1 is empty, so an existing sheet
+      // with the team's own headers is left untouched.
+      final firstRow = await api.spreadsheets.values.get(
         _spreadsheetId!,
         "'$tabName'!A1:AV1",
-        valueInputOption: 'RAW',
       );
+      final isEmpty = firstRow.values == null ||
+          firstRow.values!.isEmpty ||
+          firstRow.values!.first.every((c) => c.toString().trim().isEmpty);
 
-      // Freeze the header so it stays visible as the log grows.
-      final sheetId = (await api.spreadsheets.get(_spreadsheetId!))
-          .sheets
-          ?.firstWhere((s) => s.properties?.title == _sheetName)
-          .properties
-          ?.sheetId;
-      if (sheetId != null) {
-        await api.spreadsheets.batchUpdate(
-          sheets.BatchUpdateSpreadsheetRequest(requests: [
-            sheets.Request(
-              updateSheetProperties: sheets.UpdateSheetPropertiesRequest(
-                properties: sheets.SheetProperties(
-                  sheetId: sheetId,
-                  gridProperties:
-                      sheets.GridProperties(frozenRowCount: 1),
-                ),
-                fields: 'gridProperties.frozenRowCount',
-              ),
-            ),
-          ]),
+      if (isEmpty) {
+        debugPrint('Writing header row to "$tabName"');
+        await api.spreadsheets.values.update(
+          sheets.ValueRange(values: [_headerRow]),
           _spreadsheetId!,
+          "'$tabName'!A1:AV1",
+          valueInputOption: 'RAW',
         );
       }
+
+      return tabName;
+    } catch (e) {
+      debugPrint('Error in _ensureSheetReady for "$tabName": $e');
+      rethrow;
     }
-    return tabName;
   }
 
   /// Test hooks - keep the row and header widths verifiably in sync.

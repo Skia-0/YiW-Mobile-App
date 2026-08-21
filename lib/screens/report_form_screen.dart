@@ -163,12 +163,14 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
   ///
   /// When "Other" is chosen the dropdown value is the literal string "Other",
   /// which is useless in the spreadsheet - use what the officer typed instead.
-  String get _effectiveHub => _selectedHub == 'Other'
-      ? _otherHubController.text.trim()
-      : _selectedHub;
-
-  /// True when the hub was typed rather than picked from the configured list.
-  bool get _isUnknownHub => _selectedHub == 'Other';
+  /// The hub name to record.
+  ///
+  /// "Other" no longer exists in the dropdown, so this is simply the selected
+  /// hub - except in zones with no configured hubs, where the officer types
+  /// the name into [_otherHubController] instead.
+  String get _effectiveHub => _selectedHub.isNotEmpty
+      ? _selectedHub
+      : _otherHubController.text.trim();
 
   List<String> _getHubsForZone() => AppConfig.hubsByZone[_selectedZone] ?? [];
   List<String> _getCommunitiesForHub() => AppConfig.communitiesByHub[_selectedHub] ?? [];
@@ -495,32 +497,42 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
       icon: Icons.business,
       children: [
         _buildInputRow([
-          DropdownButtonFormField<String>(
-            decoration: const InputDecoration(labelText: 'Hub / TSP *', prefixIcon: Icon(Icons.business_outlined)),
-            value: _selectedHub.isEmpty ? null : _selectedHub,
-            items: [
-              ...hubs.map((h) => DropdownMenuItem(value: h, child: Text(h, overflow: TextOverflow.ellipsis))),
-              const DropdownMenuItem(value: 'Other', child: Text('Other')),
-            ],
-            onChanged: (v) => setState(() { _selectedHub = v!; _selectedCommunity = ''; }),
-            validator: (v) => v == null ? 'Required' : null,
-          ),
-          _selectedHub == 'Other'
-              ? TextFormField(
+          // "Other" was removed from this dropdown: officers must pick a
+          // configured hub. Zones with no hubs yet (Bono, Savannah, Oti) fall
+          // back to a free-text field, otherwise they could not submit at all.
+          hubs.isNotEmpty
+              ? DropdownButtonFormField<String>(
+                  decoration: const InputDecoration(
+                      labelText: 'Hub / TSP *',
+                      prefixIcon: Icon(Icons.business_outlined)),
+                  value: _selectedHub.isEmpty ? null : _selectedHub,
+                  isExpanded: true,
+                  items: hubs
+                      .map((h) => DropdownMenuItem(
+                          value: h,
+                          child: Text(h, overflow: TextOverflow.ellipsis)))
+                      .toList(),
+                  onChanged: (v) => setState(() {
+                    _selectedHub = v!;
+                    _selectedCommunity = '';
+                  }),
+                  validator: (v) => v == null ? 'Required' : null,
+                )
+              : TextFormField(
                   controller: _otherHubController,
                   textCapitalization: TextCapitalization.words,
                   decoration: const InputDecoration(
-                    labelText: 'Hub name *',
+                    labelText: 'Hub / TSP *',
                     hintText: 'Type the hub name',
-                    prefixIcon: Icon(Icons.edit_outlined),
-                    helperText: 'Logged under "Unknown Hubs"',
+                    prefixIcon: Icon(Icons.business_outlined),
+                    helperText: 'No hubs listed for this zone yet',
                   ),
                   validator: (v) => (v == null || v.trim().isEmpty)
                       ? 'Enter the hub name'
                       : null,
                   onChanged: (_) => setState(() {}),
-                )
-              : communities.isNotEmpty
+                ),
+          communities.isNotEmpty
               ? DropdownButtonFormField<String>(
                   decoration: const InputDecoration(labelText: 'Community *', prefixIcon: Icon(Icons.location_city_outlined)),
                   value: _selectedCommunity.isEmpty ? null : _selectedCommunity,
@@ -1450,7 +1462,25 @@ class _ReportFormScreenState extends State<ReportFormScreen> with TickerProvider
         id: '', createdAt: DateTime.now(), updatedAt: DateTime.now(),
         userId: user?.uid, userName: _fullNameController.text,
         focalPerson: FocalPerson(fullName: _fullNameController.text, phoneNumber: _phoneController.text, email: _emailController.text, zone: _selectedZone, visitDate: _visitDate, visitTypes: _selectedVisitTypes),
-        trainingCentre: TrainingCentre(hub: _selectedHub == 'Other' ? 'Other' : _effectiveHub, otherHubName: _selectedHub == 'Other' ? _otherHubController.text.trim() : null, community: _selectedCommunity.isNotEmpty ? _selectedCommunity : _communityController.text, centreName: _centreNameController.text, centreAddress: _centreAddressController.text, contactPerson: _contactPersonController.text, contactPhone: _contactPhoneController.text, timeArrived: _timeArrived != null ? DateTime(2026, 1, 1, _timeArrived!.hour, _timeArrived!.minute) : null, timeDeparted: _timeDeparted != null ? DateTime(2026, 1, 1, _timeDeparted!.hour, _timeDeparted!.minute) : null),
+        trainingCentre: () {
+          // "Other" was removed from the dropdown. _effectiveHub is the
+          // selected hub, or the typed name in zones that have none configured.
+          final hubValue = _effectiveHub;
+          final otherHubName = _selectedHub.isEmpty
+              ? _otherHubController.text.trim()
+              : null;
+          return TrainingCentre(
+            hub: hubValue,
+            otherHubName: otherHubName,
+            community: _selectedCommunity.isNotEmpty ? _selectedCommunity : _communityController.text,
+            centreName: _centreNameController.text,
+            centreAddress: _centreAddressController.text,
+            contactPerson: _contactPersonController.text,
+            contactPhone: _contactPhoneController.text,
+            timeArrived: _timeArrived != null ? DateTime(2026, 1, 1, _timeArrived!.hour, _timeArrived!.minute) : null,
+            timeDeparted: _timeDeparted != null ? DateTime(2026, 1, 1, _timeDeparted!.hour, _timeDeparted!.minute) : null,
+          );
+        }(),
         attendance: Attendance(youngMenPresent: _youngMen, youngWomenPresent: _youngWomen, personsWithDisability: _pwd, hubStaffOnDuty: _staff, trainersPresent: _trainers),
         employmentOutcome: EmploymentOutcome(placedInFormalEmployment: _formalJobs, placedInInternships: _internships, joinedCooperatives: _cooperatives, referredForFurtherTraining: _furtherTraining, employerNames: _employerController.text.isNotEmpty ? [_employerController.text] : []),
         courseEnrolledIn: _courseController.text, successStory: _successStoryController.text, youthVoice: _youthVoiceController.text,
